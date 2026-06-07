@@ -1,0 +1,27 @@
+# Virtual Environments
+final_rag/venv/
+venv/
+.venv/
+env/
+.env/
+
+# Databases & local storage
+final_rag/qdrant_db/
+qdrant_db/
+*.db
+*.sqlite
+*.sqlite3
+
+# Document processing output and temp files
+.tmp.driveupload/
+.tmp.drivedownload/
+RAG_system/tmp/
+md_output/
+final_rag/md_output/
+__pycache__/
+*.pyc
+
+# IDE/Editor config
+.vscode/
+.idea/
+.DS_Store

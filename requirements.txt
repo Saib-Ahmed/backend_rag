@@ -1,0 +1,9 @@
+bcrypt
+fastapi
+uvicorn
+pydantic
+requests
+SpeechRecognition
+imageio_ffmpeg
+pymongo
+certifi

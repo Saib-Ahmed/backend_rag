@@ -1,0 +1,240 @@
+INFO:     Started server process [34125]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+2026-06-02 19:56:31,848 | INFO     | numexpr.utils | NumExpr defaulting to 12 threads.
+2026-06-02 19:56:33,011 | DEBUG    | pydot | pydot initializing
+2026-06-02 19:56:33,011 | DEBUG    | pydot | pydot 4.0.1
+2026-06-02 19:56:33,014 | DEBUG    | pydot.core | pydot core module initializing
+2026-06-02 19:56:38,952 | DEBUG    | matplotlib | matplotlib data path: /usr/local/lib/python3.12/dist-packages/matplotlib/mpl-data
+2026-06-02 19:56:38,958 | DEBUG    | matplotlib | CONFIGDIR=/root/.config/matplotlib
+2026-06-02 19:56:38,959 | DEBUG    | matplotlib | interactive is False
+2026-06-02 19:56:38,959 | DEBUG    | matplotlib | platform is linux
+2026-06-02 19:56:39,027 | DEBUG    | matplotlib | CACHEDIR=/root/.cache/matplotlib
+2026-06-02 19:56:39,028 | DEBUG    | matplotlib.font_manager | Using fontManager instance from /root/.cache/matplotlib/fontlist-v390.json
+2026-06-02 19:56:39,500 | INFO     | ingestion.parser | GPU detected: NVIDIA L4
+2026-06-02 19:56:39,501 | INFO     | ingestion.parser | Loading YOLOv10 layout model...
+2026-06-02 19:56:39,703 | INFO     | ingestion.parser | Loading Table Transformer model...
+Loading weights:   0%|          | 0/367 [00:00<?, ?it/s]Loading weights:  92%|█████████▏| 337/367 [00:00<00:00, 3364.87it/s]Loading weights: 100%|██████████| 367/367 [00:00<00:00, 3343.01it/s]
+2026-06-02 19:56:44,390 | DEBUG    | datasets | PyTorch version 2.11.0+cu128 available.
+2026-06-02 19:56:44,396 | DEBUG    | datasets | Polars version 1.35.2 available.
+2026-06-02 19:56:44,399 | DEBUG    | datasets | Duckdb version 1.3.2 available.
+2026-06-02 19:56:44,403 | INFO     | datasets | TensorFlow version 2.20.0 available.
+2026-06-02 19:56:44,409 | INFO     | datasets | JAX version 0.7.2 available.
+INFO:     Started server process [34126]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8002 (Press CTRL+C to quit)
+2026-06-02 19:56:46 | INFO     | ingestion.parser | GPU detected: NVIDIA L4
+2026-06-02 19:56:46 | INFO     | ingestion.parser | Loading YOLOv10 layout model...
+2026-06-02 19:56:46 | INFO     | ingestion.parser | Loading Table Transformer model...
+Loading weights:   0%|          | 0/367 [00:00<?, ?it/s]Loading weights:  87%|████████▋ | 320/367 [00:00<00:00, 3181.70it/s]Loading weights: 100%|██████████| 367/367 [00:00<00:00, 3172.99it/s]
+INFO:     Started server process [34127]
+INFO:     Waiting for application startup.
+2026-06-02 19:56:48 | INFO     | qdrant_storage.store | Connecting to Qdrant at /content/drive/Othercomputers/My Laptop/combine/final_rag/qdrant_db...
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store | Qdrant connection established
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store | Collection 'rag_documents' already exists.
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: source_file (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: page_no (integer)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: is_table (bool)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: doc_year (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: chunk_year (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: section (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: doc_id (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: chunk_id (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: filename_tokens (keyword)
+2026-06-02 19:56:50 | INFO     | qdrant_storage.store |   ✓ Indexed: keywords (keyword)
+2026-06-02 19:56:50 | INFO     | ingestion.embedder | Loading FastEmbed BM25 sparse model...
+2026-06-02 19:56:50 | INFO     | ingestion.embedder | FastEmbed BM25 ready | model=Qdrant/bm25
+2026-06-02 19:56:50 | INFO     | httpx | HTTP Request: GET http://localhost:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-02 19:56:50 | INFO     | ingestion.embedder | Ollama reachable | http://localhost:11434/api/tags
+2026-06-02 19:56:52 | INFO     | httpx | HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+2026-06-02 19:56:52 | INFO     | ingestion.embedder | Embedding dimension verified | 2560
+2026-06-02 19:56:52 | INFO     | ingestion.embedder | OllamaEmbedder ready | model=qwen3-embedding:4b | batch=8 | url=http://localhost:11434/api/embeddings
+2026-06-02 19:56:52 | INFO     | sentence_transformers.base.model | No device provided, using cuda:0
+2026-06-02 19:56:52 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:52 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/modules.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:52 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-06-02 19:56:52 | WARNING  | huggingface_hub.utils._http | Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-06-02 19:56:52 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:52 | INFO     | sentence_transformers.base.model | Loading CrossEncoder model from Qwen/Qwen3-Reranker-0.6B.
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/README.md "HTTP/1.1 200 OK"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/modules.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:53 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:54 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:54 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:54 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:54 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:54 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 6132.08it/s]
+2026-06-02 19:56:55 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/generation_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:55 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/generation_config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:55 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/custom_generate/generate.py "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:55 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:55 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:56 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:57 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:57 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:57 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen3-Reranker-0.6B/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-06-02 19:56:57 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen3-Reranker-0.6B/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-06-02 19:56:58 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen3-Reranker-0.6B "HTTP/1.1 200 OK"
+2026-06-02 19:56:59 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/1_LogitScore/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:56:59 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/Qwen/Qwen3-Reranker-0.6B/e61197ed45024b0ed8a2d74b80b4d909f1255473/1_LogitScore%2Fconfig.json "HTTP/1.1 200 OK"
+2026-06-02 19:56:59 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/Qwen/Qwen3-Reranker-0.6B "HTTP/1.1 200 OK"
+2026-06-02 19:56:59 | INFO     | sentence_transformers.base.model | Loaded 1 prompt with these keys: ['query']
+2026-06-02 19:56:59 | WARNING  | sentence_transformers.base.model | Default prompt name is set to 'query'. This prompt will be applied to all inference calls, except if a `prompt` or `prompt_name` parameter is provided.
+2026-06-02 19:56:59 | INFO     | agent.retriever | Retriever initialized | embedder=OllamaEmbedder | reranker=Qwen/Qwen3-Reranker-0.6B
+2026-06-02 19:56:59 | INFO     | agent.assembler | Assembler initialized | token_limit=11000
+2026-06-02 19:56:59 | INFO     | agent.orchestrator | Orchestrator initialized | generator=qwen3.5:9b
+2026-06-02 19:56:59 | INFO     | ingestion.parser | DocumentParser initialized | output_dir=md_output
+2026-06-02 19:56:59 | INFO     | ingestion.chunker | tiktoken loaded — cl100k_base
+2026-06-02 19:56:59 | INFO     | ingestion.chunker | DocumentChunker initialised | size=650 | overlap=100
+2026-06-02 19:56:59 | INFO     | api | Cleaned up stuck processing records on startup
+2026-06-02 19:56:59 | INFO     | api | API Ready | CORS origins: ['*']
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8003 (Press CTRL+C to quit)
+INFO:     152.58.24.208:0 - "GET /sessions?user_id=a4cf97c3-9d5f-4ff7-b8da-ef02b2a30b9e HTTP/1.1" 200 OK
+INFO:     152.58.24.208:0 - "GET /sessions/gc5r9jcsjncz3fnxk9nn/history HTTP/1.1" 200 OK
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_part_begin with no data
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[36:55]
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[57:87]
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_headers_finished with no data
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[91:96]
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_part_end with no data
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_part_begin with no data
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[134:153]
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[155:184]
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 19:59:02,517 | DEBUG    | python_multipart.multipart | Calling on_headers_finished with no data
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[188:192]
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_part_end with no data
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_part_begin with no data
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[230:249]
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[251:312]
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[314:326]
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[328:343]
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_headers_finished with no data
+2026-06-02 19:59:02,518 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[347:98223]
+2026-06-02 19:59:02,519 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[0:48894]
+2026-06-02 19:59:02,519 | DEBUG    | python_multipart.multipart | Calling on_part_end with no data
+2026-06-02 19:59:02,519 | DEBUG    | python_multipart.multipart | Calling on_end with no data
+2026-06-02 19:59:02,524 | INFO     | qdrant_storage.store | Connecting to Qdrant at qdrant_db...
+2026-06-02 19:59:02,552 | INFO     | qdrant_storage.store | Qdrant connection established
+2026-06-02 19:59:02,552 | INFO     | qdrant_storage.store | Collection 'local_documents' already exists.
+2026-06-02 19:59:02,552 | INFO     | qdrant_storage.store | All payload indexes are handled dynamically in Qdrant Local mode. Ready.
+2026-06-02 19:59:02,552 | INFO     | ingestion.embedder | Loading FastEmbed BM25 sparse model...
+2026-06-02 19:59:02,794 | INFO     | ingestion.embedder | FastEmbed BM25 ready | model=Qdrant/bm25
+2026-06-02 19:59:02,843 | INFO     | httpx | HTTP Request: GET http://localhost:11434/api/tags "HTTP/1.1 200 OK"
+2026-06-02 19:59:02,843 | INFO     | ingestion.embedder | Ollama reachable | http://localhost:11434/api/tags
+2026-06-02 19:59:05,643 | INFO     | httpx | HTTP Request: POST http://localhost:11434/api/embeddings "HTTP/1.1 200 OK"
+2026-06-02 19:59:05,644 | INFO     | ingestion.embedder | Embedding dimension verified | 1024
+2026-06-02 19:59:05,687 | INFO     | ingestion.embedder | OllamaEmbedder ready | model=bge-m3 | batch=8 | url=http://localhost:11434/api/embeddings
+2026-06-02 19:59:05,747 | INFO     | neo4j.notifications | Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE CONSTRAINT graph_document_file_hash IF NOT EXISTS FOR (e:Document) REQUIRE (e.file_hash) IS UNIQUE' has no effect. The index or constraint specified by 'CONSTRAINT graph_document_file_hash FOR (e:Document) REQUIRE (e.file_hash) IS UNIQUE' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE CONSTRAINT graph_document_file_hash IF NOT EXISTS FOR (d:Document) REQUIRE d.file_hash IS UNIQUE'
+2026-06-02 19:59:05,750 | INFO     | neo4j.notifications | Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE CONSTRAINT graph_chunk_key IF NOT EXISTS FOR (e:Chunk) REQUIRE (e.chunk_key) IS UNIQUE' has no effect. The index or constraint specified by 'CONSTRAINT graph_chunk_key FOR (e:Chunk) REQUIRE (e.chunk_key) IS UNIQUE' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE CONSTRAINT graph_chunk_key IF NOT EXISTS FOR (c:Chunk) REQUIRE c.chunk_key IS UNIQUE'
+2026-06-02 19:59:05,753 | INFO     | neo4j.notifications | Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE CONSTRAINT graph_entity_key IF NOT EXISTS FOR (e:Entity) REQUIRE (e.entity_key) IS UNIQUE' has no effect. The index or constraint specified by 'CONSTRAINT graph_entity_key FOR (e:Entity) REQUIRE (e.entity_key) IS UNIQUE' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE CONSTRAINT graph_entity_key IF NOT EXISTS FOR (e:Entity) REQUIRE e.entity_key IS UNIQUE'
+2026-06-02 19:59:05,755 | INFO     | neo4j.notifications | Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE RANGE INDEX graph_entity_norm IF NOT EXISTS FOR (e:Entity) ON (e.name_norm)' has no effect. The index or constraint specified by 'RANGE INDEX graph_entity_norm FOR (e:Entity) ON (e.name_norm)' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE INDEX graph_entity_norm IF NOT EXISTS FOR (e:Entity) ON (e.name_norm)'
+2026-06-02 19:59:05,757 | INFO     | neo4j.notifications | Received notification from DBMS server: <GqlStatusObject gql_status='00NA0', status_description="note: successful completion - index or constraint already exists. The command 'CREATE RANGE INDEX graph_chunk_source_id IF NOT EXISTS FOR (e:Chunk) ON (e.source, e.chunk_id)' has no effect. The index or constraint specified by 'RANGE INDEX graph_chunk_source_id FOR (e:Chunk) ON (e.source, e.chunk_id)' already exists.", position=None, raw_classification='SCHEMA', classification=<NotificationClassification.SCHEMA: 'SCHEMA'>, raw_severity='INFORMATION', severity=<NotificationSeverity.INFORMATION: 'INFORMATION'>, diagnostic_record={'_classification': 'SCHEMA', '_severity': 'INFORMATION', 'OPERATION': '', 'OPERATION_CODE': '0', 'CURRENT_SCHEMA': '/'}> for query: 'CREATE INDEX graph_chunk_source_id IF NOT EXISTS FOR (c:Chunk) ON (c.source, c.chunk_id)'
+2026-06-02 19:59:05,804 | INFO     | sentence_transformers.base.model | No device provided, using cuda:0
+2026-06-02 19:59:06,094 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:06,332 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:06,333 | DEBUG    | sentence_transformers.util.file_io | Could not load 'modules.json' from 'cross-encoder/ms-marco-MiniLM-L-6-v2': 404 Client Error. (Request ID: Root=1-6a1f360a-12e6b3307f6c2d9413dc55a8;e11fad03-1305-4928-a478-346f577451af)
+
+Entry Not Found for url: https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/modules.json.
+2026-06-02 19:59:06,333 | INFO     | sentence_transformers.base.model | No modules.json found for cross-encoder/ms-marco-MiniLM-L-6-v2, initializing a new CrossEncoder model.
+2026-06-02 19:59:06,574 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L-6-v2 "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:06,816 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L6-v2 "HTTP/1.1 200 OK"
+2026-06-02 19:59:07,062 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:07,292 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-06-02 19:59:07,292 | WARNING  | huggingface_hub.utils._http | Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-06-02 19:59:07,297 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:59:07,534 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/adapter_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:07,761 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:07,996 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:08,225 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:08,230 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:59:08,477 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:08,715 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:08,720 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/config.json "HTTP/1.1 200 OK"
+Loading weights:   0%|          | 0/105 [00:00<?, ?it/s]Loading weights: 100%|██████████| 105/105 [00:00<00:00, 5215.44it/s]
+2026-06-02 19:59:09,025 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/processor_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:09,266 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:09,503 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:09,737 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:09,983 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:10,222 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:10,453 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:10,705 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:10,941 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:11,179 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:11,184 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-02 19:59:11,410 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:11,637 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:11,643 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:59:11,887 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:12,123 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:12,128 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/config.json "HTTP/1.1 200 OK"
+2026-06-02 19:59:12,366 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:12,593 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/cross-encoder/ms-marco-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:12,598 | INFO     | httpx | HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/cross-encoder/ms-marco-MiniLM-L6-v2/c5ee24cb16019beea0893ab7796b1df96625c6b8/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-02 19:59:12,836 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L-6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:13,068 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-06-02 19:59:13,301 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L-6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 307 Temporary Redirect"
+2026-06-02 19:59:13,532 | INFO     | httpx | HTTP Request: GET https://huggingface.co/api/models/cross-encoder/ms-marco-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-06-02 19:59:13,572 | DEBUG    | sentence_transformers.base.modules.transformer | Active modality config: {'text': {'method': 'forward', 'method_output_name': 'logits'}}
+2026-06-02 19:59:13,737 | INFO     | agent.retriever | Retriever initialized | embedder=OllamaEmbedder | reranker=cross-encoder/ms-marco-MiniLM-L-6-v2 | graph_rag=True
+2026-06-02 19:59:13,737 | INFO     | agent.assembler | Assembler initialized | token_limit=11000
+2026-06-02 19:59:13,781 | INFO     | agent.orchestrator | Orchestrator initialized | generator=qwen3.5:9b
+2026-06-02 19:59:13,781 | INFO     | ingestion.parser | DocumentParser initialized | output_dir=None
+2026-06-02 19:59:13,781 | INFO     | ingestion.chunker | tiktoken loaded — cl100k_base
+2026-06-02 19:59:13,782 | INFO     | ingestion.chunker | DocumentChunker initialised | size=1000 | overlap=200
+2026-06-02 19:59:13,783 | INFO     | rag_engine | File MSEFC_Govt of MP_2017.pdf already ingested (Hash Match). Skipping.
+INFO:     152.58.24.208:0 - "POST /upload HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50842 - "GET /api/stats HTTP/1.1" 200 OK
+INFO:     152.58.24.208:0 - "GET /stats HTTP/1.1" 200 OK
+2026-06-02 20:00:46,771 | DEBUG    | python_multipart.multipart | Calling on_part_begin with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[36:55]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[57:87]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_headers_finished with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[91:96]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_part_end with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_part_begin with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[134:153]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[155:184]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_headers_finished with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[188:192]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_part_end with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_part_begin with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[230:249]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[251:312]
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 20:00:46,772 | DEBUG    | python_multipart.multipart | Calling on_header_field with data[314:326]
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_header_value with data[328:343]
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_header_end with no data
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_headers_finished with no data
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[347:98223]
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_part_data with data[0:48894]
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_part_end with no data
+2026-06-02 20:00:46,773 | DEBUG    | python_multipart.multipart | Calling on_end with no data
+2026-06-02 20:00:46,775 | INFO     | rag_engine | File MSEFC_Govt of MP_2017.pdf already ingested (Hash Match). Skipping.
+INFO:     152.58.24.208:0 - "POST /upload HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33324 - "GET /api/stats HTTP/1.1" 200 OK
+INFO:     152.58.24.208:0 - "GET /stats HTTP/1.1" 200 OK
