@@ -282,14 +282,86 @@ def get_upload_status(task_id: str):
     # to free memory, but keeping it allows the client to retry fetching status if needed.
     return upload_tasks[task_id]
 
+@app.get("/documents/search")
+def search_documents_route(q: str = Query(..., min_length=1), rag_version: str = Query("version1")):
+    try:
+        if rag_version == "version1":
+            target_url = "http://localhost:8002/api/documents/search"
+        else:
+            target_url = "http://localhost:8003/api/documents/search"
+            
+        res = requests.get(target_url, params={"q": q}, timeout=30)
+        
+        if res.status_code == 200:
+            return res.json()
+        else:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/{file_name}/content")
+def get_document_content_route(file_name: str, rag_version: str = Query("version1")):
+    try:
+        import urllib.parse
+        encoded_name = urllib.parse.quote(file_name)
+        if rag_version == "version1":
+            target_url = f"http://localhost:8002/api/documents/{encoded_name}/content"
+        else:
+            target_url = f"http://localhost:8003/api/documents/{encoded_name}/content"
+            
+        res = requests.get(target_url, timeout=30)
+        
+        if res.status_code == 200:
+            return res.json()
+        else:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class DocumentContentUpdateUnified(BaseModel):
+    content: str
+
+@app.put("/documents/{file_name}/content")
+def update_document_content_route(file_name: str, req: DocumentContentUpdateUnified, rag_version: str = Query("version1")):
+    try:
+        import urllib.parse
+        encoded_name = urllib.parse.quote(file_name)
+        if rag_version == "version1":
+            target_url = f"http://localhost:8002/api/documents/{encoded_name}/content"
+        else:
+            target_url = f"http://localhost:8003/api/documents/{encoded_name}/content"
+            
+        res = requests.put(target_url, json={"content": req.content}, timeout=300)
+        
+        if res.status_code == 200:
+            return res.json()
+        else:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/documents/{file_name}")
 def delete_document_route(file_name: str, rag_version: str = Query("version1")):
     try:
         # Determine target URL based on rag_version
+        import urllib.parse
+        encoded_name = urllib.parse.quote(file_name)
         if rag_version == "version1":
-            target_url = f"http://localhost:8002/api/documents/{file_name}"
+            target_url = f"http://localhost:8002/api/documents/{encoded_name}"
         else:
-            target_url = f"http://localhost:8003/documents/{file_name}"
+            target_url = f"http://localhost:8003/documents/{encoded_name}"
             
         res = requests.delete(target_url, timeout=30)
         
@@ -314,6 +386,62 @@ def clear_all_documents_route(rag_version: str = Query("version1")):
             return res.json()
         else:
             raise HTTPException(status_code=res.status_code, detail=res.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/preview-parse")
+async def preview_parse_route(
+    file: UploadFile = File(...),
+    rag_version: str = Query("version1"),
+):
+    """Proxy: parse a document to markdown without saving."""
+    try:
+        file_bytes = await file.read()
+        if rag_version == "version1":
+            target_url = "http://localhost:8002/api/documents/preview-parse"
+        else:
+            target_url = "http://localhost:8003/api/documents/preview-parse"
+
+        files_payload = {"file": (file.filename, file_bytes, file.content_type)}
+        res = requests.post(target_url, files=files_payload, timeout=900)
+
+        if res.status_code == 200:
+            return res.json()
+        else:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/documents/replace")
+async def replace_document_route(
+    file: UploadFile = File(...),
+    old_file_name: str = Form(...),
+    rag_version: str = Query("version1"),
+):
+    """Proxy: delete old document and ingest new one."""
+    try:
+        file_bytes = await file.read()
+        if rag_version == "version1":
+            target_url = "http://localhost:8002/api/documents/replace"
+        else:
+            target_url = "http://localhost:8003/api/documents/replace"
+
+        files_payload = {"file": (file.filename, file_bytes, file.content_type)}
+        data_payload = {"old_file_name": old_file_name}
+        res = requests.post(target_url, files=files_payload, data=data_payload, timeout=900)
+
+        if res.status_code == 200:
+            return res.json()
+        else:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

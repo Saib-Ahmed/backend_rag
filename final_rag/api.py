@@ -3,13 +3,17 @@ api.py
 FastAPI — RAG Pipeline Gateway
 """
 
+import sys
+# Mock torchcodec to prevent import runtime crashes in environments with missing FFmpeg
+sys.modules['torchcodec'] = None
+
 import json
 import logging
 import os
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -75,7 +79,7 @@ def startup():
     db.setup_database()
     embedder     = get_embedder(db=db)
     orchestrator = get_orchestrator(embedder=embedder)
-    doc_parser   = DocumentParser(output_dir=Path("md_output"))
+    doc_parser   = DocumentParser(output_dir=config.MD_OUTPUT_DIR)
     doc_chunker  = DocumentChunker()
 
     # Cleanup stuck records from previous crashed runs
@@ -383,6 +387,252 @@ def list_documents_endpoint():
         logger.error("Failed to list documents: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+class DocumentContentUpdate(BaseModel):
+    content: str
+
+@app.get("/api/documents/search")
+def search_documents(q: str = Query(..., min_length=1)):
+    query_lower = q.lower()
+    results = []
+    
+    md_dir = config.MD_OUTPUT_DIR
+    if not md_dir.exists():
+        return results
+        
+    for md_path in md_dir.glob("*.md"):
+        file_name = md_path.stem + ".pdf"
+        matches = 0
+        snippets = []
+        
+        name_match = query_lower in file_name.lower()
+        if name_match:
+            matches += 1
+            
+        try:
+            content = md_path.read_text(encoding="utf-8")
+            import re
+            content_lower = content.lower()
+            for match in re.finditer(re.escape(query_lower), content_lower):
+                matches += 1
+                match_start = match.start()
+                match_end = match.end()
+                
+                para_start = content.rfind("\n\n", 0, match_start)
+                if para_start == -1:
+                    para_start = 0
+                else:
+                    para_start += 2
+                    
+                para_end = content.find("\n\n", match_end)
+                if para_end == -1:
+                    para_end = len(content)
+                    
+                paragraph = content[para_start:para_end].strip()
+                
+                if len(paragraph) > 400:
+                    rel_start = match_start - para_start
+                    rel_end = match_end - para_start
+                    
+                    crop_start = max(0, rel_start - 180)
+                    crop_end = min(len(paragraph), rel_end + 180)
+                    
+                    snippet_text = paragraph[crop_start:crop_end].strip()
+                    if crop_start > 0:
+                        snippet_text = "... " + snippet_text
+                    if crop_end < len(paragraph):
+                        snippet_text = snippet_text + " ..."
+                else:
+                    snippet_text = paragraph
+                
+                snippet_clean = re.sub(r'\s+', ' ', snippet_text).strip()
+                if snippet_clean and snippet_clean not in snippets:
+                    snippets.append(snippet_clean)
+        except Exception:
+            pass
+            
+        if matches > 0:
+            results.append({
+                "file_name": file_name,
+                "matches": matches,
+                "snippets": snippets
+            })
+            
+    return results
+
+@app.get("/api/documents/{file_name}/content")
+def get_document_content(file_name: str):
+    stem = Path(file_name).stem
+    md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
+    if not md_path.exists():
+        raise HTTPException(status_code=404, detail="Content not found")
+    content = md_path.read_text(encoding="utf-8")
+    return {"file_name": file_name, "content": content}
+
+@app.put("/api/documents/{file_name}/content")
+def update_document_content(file_name: str, payload: DocumentContentUpdate):
+    stem = Path(file_name).stem
+    md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
+    
+    md_path.parent.mkdir(exist_ok=True, parents=True)
+    md_path.write_text(payload.content, encoding="utf-8")
+    
+    try:
+        db.delete_document(file_name)
+    except Exception as e:
+        logger.error("Error deleting old chunks for %s: %s", file_name, e)
+        
+    try:
+        from final_rag.ingestion.parser import ParseResult, BlockRecord, DocumentMeta, ExtractionMethod
+        import hashlib
+        import re
+        
+        file_hash = hashlib.md5(payload.content.encode('utf-8')).hexdigest()
+        
+        meta = DocumentMeta(
+            doc_id=file_hash[:12],
+            file_name=file_name,
+            file_path=str(md_path),
+            file_type=".md",
+            file_size_kb=len(payload.content) / 1024,
+            page_count=1,
+            has_tables=False,
+            parse_success=True,
+            filename_tokens=re.split(r'[_\-\\s]+', stem.lower()),
+        )
+        
+        blocks = [BlockRecord(block_type="text", content=payload.content, page_no=1, page_label="1")]
+        
+        parse_res = ParseResult(
+            file_name=file_name,
+            file_type=".md",
+            method_used=ExtractionMethod.YOLO,
+            markdown=payload.content,
+            meta=meta,
+            total_pages=1,
+            success=True,
+            blocks=blocks,
+            doc_id=meta.doc_id,
+            filename_tokens=meta.filename_tokens
+        )
+        
+        chunks = doc_chunker.chunk(parse_res)
+        embedder.embed_and_store(chunks)
+        
+        doc_record = get_document_by_filename(file_name)
+        if doc_record:
+            update_document_status(doc_record.document_id, "success")
+        
+        return {"status": "success", "chunks_indexed": len(chunks)}
+    except Exception as e:
+        logger.error("Error re-ingesting %s: %s", file_name, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── POST /api/documents/preview-parse ──────────────────────────────────
+@app.post("/api/documents/preview-parse")
+async def preview_parse_document(file: UploadFile = File(...)):
+    """Parse a document to markdown in memory without saving or ingesting."""
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        logger.error("Failed to read uploaded file for preview: %s", e)
+        raise HTTPException(status_code=500, detail="Could not read file.")
+
+    try:
+        # Use a parser with output_dir=None so _save() is a no-op
+        preview_parser = DocumentParser(output_dir=None)
+        parsed_result = preview_parser.parse_bytes(file_bytes, file.filename)
+        if not parsed_result.success:
+            raise Exception(f"Parsing failed: {parsed_result.error}")
+
+        return {
+            "file_name": file.filename,
+            "content": parsed_result.markdown,
+        }
+    except Exception as e:
+        logger.error("Preview parse failed for %s: %s", file.filename, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── POST /api/documents/replace ────────────────────────────────────────
+@app.post("/api/documents/replace")
+async def replace_document(
+    file: UploadFile = File(...),
+    old_file_name: str = Form(...),
+):
+    """Delete an existing document and ingest a new one in its place."""
+    # Step 1: Delete old document from Qdrant
+    try:
+        db.delete_document(old_file_name)
+        logger.info("Deleted old vectors for '%s' from Qdrant.", old_file_name)
+    except Exception as e:
+        logger.error("Failed to delete old vectors for %s: %s", old_file_name, e)
+
+    # Step 2: Delete old document DB record
+    try:
+        delete_document_record(old_file_name)
+        logger.info("Deleted old DB record for '%s'.", old_file_name)
+    except Exception as e:
+        logger.error("Failed to delete old DB record for %s: %s", old_file_name, e)
+
+    # Step 3: Delete old .md file
+    try:
+        old_stem = Path(old_file_name).stem
+        old_md_path = config.MD_OUTPUT_DIR / f"{old_stem}.md"
+        if old_md_path.exists():
+            old_md_path.unlink()
+            logger.info("Deleted old md file: %s", old_md_path)
+    except Exception as e:
+        logger.error("Failed to delete old md file for %s: %s", old_file_name, e)
+
+    # Step 4: Ingest the new file (full pipeline: parse → chunk → embed → save md)
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Could not read new file.")
+
+    doc_id = str(uuid.uuid4())
+    doc_type = Path(file.filename).suffix.lower()
+
+    try:
+        insert_document(
+            document_id=doc_id,
+            file_name=file.filename,
+            doc_type=doc_type,
+            file_data=file_bytes,
+            status="processing",
+        )
+    except Exception as e:
+        logger.error("Failed to create document placeholder for %s: %s", file.filename, e)
+        raise HTTPException(status_code=500, detail="Database error.")
+
+    try:
+        parsed_result = doc_parser.parse_bytes(file_bytes, file.filename)
+        if not parsed_result.success:
+            raise Exception(f"Parsing failed: {parsed_result.error}")
+
+        chunks = doc_chunker.chunk(parsed_result)
+        embedder.embed_and_store(chunks)
+        update_document_status(file.filename, "ingested")
+
+        logger.info("Successfully replaced '%s' with '%s' (%d chunks)", old_file_name, file.filename, len(chunks))
+        return {
+            "status": "success",
+            "old_deleted": old_file_name,
+            "new_file": file.filename,
+            "chunks_indexed": len(chunks),
+        }
+    except Exception as e:
+        logger.error("Replace pipeline failed for %s: %s", file.filename, e)
+        try:
+            db.delete_document(file.filename)
+        except Exception:
+            pass
+        try:
+            update_document_status(file.filename, "failed")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/stats")
 def get_stats():

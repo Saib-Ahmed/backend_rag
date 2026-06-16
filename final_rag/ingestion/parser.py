@@ -509,7 +509,7 @@ async def _generate_summary_async(markdown: str, client: httpx.AsyncClient) -> s
         )
         response = await client.post(
             SUMMARY_OLLAMA_URL,
-            json={"model": SUMMARY_MODEL, "prompt": prompt, "stream": False, "keep_alive": 0},
+            json={"model": SUMMARY_MODEL, "prompt": prompt, "stream": False, "think": False, "keep_alive": 0},
             timeout=120,
         )
         response.raise_for_status()
@@ -541,7 +541,7 @@ async def _extract_keywords_async(markdown: str, client: httpx.AsyncClient) -> l
         )
         response = await client.post(
             SUMMARY_OLLAMA_URL,
-            json={"model": SUMMARY_MODEL, "prompt": prompt, "stream": False, "keep_alive": 0},
+            json={"model": SUMMARY_MODEL, "prompt": prompt, "stream": False, "think": False, "keep_alive": 0},
             timeout=120,
         )
         response.raise_for_status()
@@ -580,7 +580,7 @@ def warmup_summary_model() -> None:
         logger.info("Warming up summary model | %s", SUMMARY_MODEL)
         httpx.post(
             SUMMARY_OLLAMA_URL,
-            json={"model": SUMMARY_MODEL, "prompt": "hello", "stream": False, "keep_alive": 300},
+            json={"model": SUMMARY_MODEL, "prompt": "hello", "stream": False, "think": False, "keep_alive": 300},
             timeout=60,
         )
         logger.info("Summary model warm | %s", SUMMARY_MODEL)

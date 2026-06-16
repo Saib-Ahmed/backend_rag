@@ -17,7 +17,7 @@ CLEANER_MODEL   = os.getenv("CLEANER_MODEL",     "qwen3.5:9b")
 GENERATOR_MODEL = os.getenv("GENERATOR_MODEL",   "qwen3.5:9b")
 
 # ── Summary LLM (ingestion only) ───────────────────────────────────────
-SUMMARY_MODEL      = os.getenv("SUMMARY_MODEL", "granite4.1:8b") 
+SUMMARY_MODEL      = os.getenv("SUMMARY_MODEL", "qwen3.5:9b") 
 SUMMARY_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 SUMMARY_MAX_CHARS  = 3500 
 
@@ -88,7 +88,7 @@ ENABLE_CHECKPOINT_RECOVERY = True
 MAX_PARSE_WORKERS          = 4
 
 # ── Ollama model Settings ──────────────────────────────────────────────
-NUM_CTX           = 16000
+NUM_CTX           = 32000
 MAX_TOKENS        = 3000 
 
 # ── Layout Model Paths ────────────────────────────────────────────────

@@ -125,7 +125,7 @@ class OllamaEmbedder:
 
         self.db = db
         self._verify_ollama()
-        self._query_client = httpx.Client(timeout=60.0)
+        self._query_client = httpx.Client(timeout=300.0)
 
         logger.info(
             "OllamaEmbedder ready | model=%s | batch=%d | url=%s",
@@ -150,7 +150,7 @@ class OllamaEmbedder:
 
         try:
             probe_payload = {"model": self.model_name, "prompt": "test"}
-            r = httpx.post(self.ollama_url, json=probe_payload, timeout=60.0)
+            r = httpx.post(self.ollama_url, json=probe_payload, timeout=300.0)
             r.raise_for_status()
             actual_dim = len(r.json()["embedding"])
             if actual_dim != config.EMBED_DIMENSIONS:
@@ -283,7 +283,7 @@ class OllamaEmbedder:
     async def _encode_passages_async(self, texts: list[str]) -> list[np.ndarray]:
         all_vecs = []
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             for start in range(0, len(texts), self.batch_size):
                 batch   = texts[start: start + self.batch_size]
                 tasks   = [self._single_embed_async(t, client) for t in batch]
@@ -328,7 +328,7 @@ class OllamaEmbedder:
         if client:
             return await _call(client)
 
-        async with httpx.AsyncClient(timeout=60.0) as c:
+        async with httpx.AsyncClient(timeout=300.0) as c:
             return await _call(c)
 
     # ── Build Qdrant point ─────────────────────────────────────────────

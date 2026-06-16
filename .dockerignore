@@ -1,0 +1,32 @@
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+
+# Git and IDEs
+**/.git/
+**/.gitignore
+**/.vscode/
+**/.pytest_cache/
+
+# Environment
+**/.env
+**/venv/
+**/env/
+
+# Databases & Storage
+**/*.db
+**/*.sqlite3
+# **/qdrant_db/
+# **/qdrant_storage/
+
+# Logs
+**/terminal_logs.txt
+**/*.log
+
+# Temp & Data directories
+**/.tmp.driveupload/
+**/.tmp.drivedownload/
+**/md_output/
+**/tmp/
+**/doc_input/
+**/checkpoints/
