@@ -15,7 +15,7 @@ import logging
 import math
 from collections import defaultdict
 import torch
-from sentence_transformers import CrossEncoder
+from final_rag.agent.ollama_reranker import OllamaReranker
 
 from final_rag.agent.models import CleanedQuery, ComparisonArm, RetrievedChunk
 from final_rag.ingestion.embedder import OllamaEmbedder
@@ -28,10 +28,14 @@ class Retriever:
     def __init__(self, embedder: OllamaEmbedder, db: QdrantManager):
         self.embedder     = embedder
         self.db           = db
-        self.rerank_model = CrossEncoder(config.RERANKER_MODEL, trust_remote_code=True)
+        self.rerank_model = OllamaReranker(
+            ollama_url  = config.RERANKER_OLLAMA_URL,
+            model_name  = config.OLLAMA_RERANKER_MODEL,
+            instruction = config.RERANKER_INSTRUCTION,
+        )
         logger.info(
-            "Retriever initialized | embedder=OllamaEmbedder | reranker=%s",
-            config.RERANKER_MODEL,
+            "Retriever initialized | embedder=OllamaEmbedder | reranker=%s (via Ollama)",
+            config.OLLAMA_RERANKER_MODEL,
         )
 
     # ── Public entry point ─────────────────────────────────────────────
@@ -248,14 +252,9 @@ class Retriever:
         if not results:
             return []
 
-        instruct_query = (
-            f"Instruct: {config.RERANKER_INSTRUCTION}\n"
-            f"Query: {improved_query}"
-        )
-
         try:
-            pairs  = [[instruct_query, r.get("text", "")] for r in results]
-            scores = self.rerank_model.predict(pairs, prompt_name=None)
+            pairs  = [[improved_query, r.get("text", "")] for r in results]
+            scores = self.rerank_model.predict(pairs)
 
             scored = []
             for raw_score, result in zip(scores, results):

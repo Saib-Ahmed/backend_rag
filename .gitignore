@@ -5,12 +5,7 @@ venv/
 env/
 .env/
 
-# Databases & local storage
-final_rag/qdrant_db/
-qdrant_db/
-*.db
-*.sqlite
-*.sqlite3
+
 
 # Document processing output and temp files
 .tmp.driveupload/

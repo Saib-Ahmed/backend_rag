@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Local caches and logs
+.extraction_cache/
+telemetry.jsonl
+chat_history_sessions.json
+
+# Temporary files and outputs
+tmp/
+md_output/
+*.pdf
+
+# IDE/Editor configurations
+.vscode/
+.idea/
+.DS_Store
+*.code-workspace
+
+# OS files
+desktop.ini
+**/desktop.ini
