@@ -37,7 +37,7 @@ echo "       Ollama is ready! (took ${ELAPSED}s)"
 
 # ── 3. Verify / Cache Ollama Models ────────────────────────────────────
 echo "[2/3] Verifying/Caching models on persistent storage..."
-MODELS=("qwen3.5:9b" "qwen3-embedding:4b" "gemma4:12b" "dengcao/Qwen3-Reranker-4B:Q4_K_M")
+MODELS=("qwen3.5:9b" "qwen3-embedding:4b" "dengcao/Qwen3-Reranker-4B:Q4_K_M")
 
 for model in "${MODELS[@]}"; do
     if ! ollama list | grep -q "$model"; then
