@@ -31,7 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Install Ollama ───────────────────────────────────────────────────────────
-RUN curl -fsSL https://ollama.com/install.sh | sh
+RUN curl -L https://ollama.com/download/ollama-linux-amd64 -o /usr/local/bin/ollama \
+    && chmod +x /usr/local/bin/ollama
 
 # ── Python Dependencies ─────────────────────────────────────────────────────
 WORKDIR /app
