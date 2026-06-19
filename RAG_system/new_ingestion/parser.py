@@ -87,8 +87,6 @@ class ExtractionMethod(str, Enum):
 
 class ParsingMode(str, Enum):
     SMART = "SMART"
-    DOCLING_ONLY = "DOCLING_ONLY"
-    OCR_ONLY = "OCR_ONLY"
 
 
 # ── DocumentMeta ───────────────────────────────────────────────────────

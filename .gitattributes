@@ -1,0 +1,5 @@
+# Force Unix line endings (LF) for shell scripts so they don't break in Docker/Linux
+*.sh text eol=lf
+
+# Force LF for python files as well
+*.py text eol=lf

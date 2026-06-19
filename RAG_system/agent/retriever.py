@@ -20,7 +20,7 @@ from collections import defaultdict
 from functools import lru_cache
 import torch
 import ollama
-from agent.ollama_reranker import OllamaReranker
+from sentence_transformers import CrossEncoder
 
 from agent.models import CleanedQuery, ComparisonArm, RetrievedChunk
 from new_ingestion.embedder import OllamaEmbedder
@@ -48,16 +48,14 @@ class Retriever:
         self.embedder     = embedder
         self.db           = db
         self.graph_rag    = graph_rag
-        self.rerank_model = OllamaReranker(
-            ollama_url  = config.RERANKER_OLLAMA_URL,
-            model_name  = config.OLLAMA_RERANKER_MODEL,
-            instruction = config.RERANKER_INSTRUCTION,
-        )
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rerank_model = CrossEncoder(config.RERANKER_MODEL, device=device, trust_remote_code=True)
         self.last_query_trace = {"stages": []}
         self.last_relationships = []
         logger.info(
-            "Retriever initialized | embedder=OllamaEmbedder | reranker=%s (via Ollama) | graph_rag=%s",
-            config.OLLAMA_RERANKER_MODEL,
+            "Retriever initialized | embedder=OllamaEmbedder | reranker=%s on %s | graph_rag=%s",
+            config.RERANKER_MODEL,
+            device,
             graph_rag is not None,
         )
 
@@ -583,12 +581,11 @@ class Retriever:
             config.RERANKER_INSTRUCTION,
         )
         try:
-            # Change: Instruction is injected inside OllamaReranker._format_prompt now
-            pairs  = [[improved_query, r.get("text", "")] for r in results]
-            
-            # Since we set instruction inside OllamaReranker, we can dynamically override it for this predict call if we want,
-            # but for now we just use the default configured instruction since OllamaReranker handles formatting.
-            self.rerank_model.instruction = instruction
+            instruct_query = (
+                f"Instruct: {instruction}\n"
+                f"Query: {improved_query}"
+            )
+            pairs  = [[instruct_query, r.get("text", "")] for r in results]
             scores = self.rerank_model.predict(pairs)
 
             scored = []

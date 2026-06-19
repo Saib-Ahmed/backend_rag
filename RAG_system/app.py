@@ -128,13 +128,6 @@ def _create_session_id(question: str) -> str:
 
 
 def _parse_parsing_mode(mode: str) -> ParsingMode:
-    mode_upper = (mode or "").strip().upper()
-    if mode_upper in {"SMART", "HYBRID"}:
-        return ParsingMode.SMART
-    if mode_upper in {"DOCLING_ONLY", "DOCLING"}:
-        return ParsingMode.DOCLING_ONLY
-    if mode_upper in {"OCR_ONLY", "OCR"}:
-        return ParsingMode.OCR_ONLY
     return ParsingMode.SMART
 
 

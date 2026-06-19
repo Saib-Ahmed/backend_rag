@@ -38,30 +38,12 @@ WORKDIR /app
 
 # Copy requirements first (Docker layer cache)
 COPY requirements.txt .
-COPY RAG_system/requirements.txt RAG_system/
-COPY final_rag/requirements.txt final_rag/
 
 RUN pip install --no-cache-dir uv && \
-    uv pip install --system \
-        -r requirements.txt \
-        -r RAG_system/requirements.txt \
-        -r final_rag/requirements.txt
-
-# ── Pre-pull Ollama Models (baked into image) ────────────────────────────────
-# Start Ollama temporarily, pull models, then stop.
-# This avoids downloading multi-GB models at container startup.
-RUN ollama serve & \
-    sleep 5 && \
-    echo "Pulling qwen3.5:9b (LLM + Summary)..." && \
-    ollama pull qwen3.5:9b && \
-    echo "Pulling qwen3-embedding:4b (Embeddings)..." && \
-    ollama pull qwen3-embedding:4b && \
-    echo "Pulling glm-ocr:q8_0 (Vision/OCR)..." && \
-    ollama pull glm-ocr:q8_0 && \
-    echo "Pulling gemma4:12b (GraphRAG extraction)..." && \
-    ollama pull gemma4:12b && \
-    echo "All models pulled successfully." && \
-    pkill ollama || true
+    uv pip install --system --no-cache \
+        --index-url https://download.pytorch.org/whl/cu124 \
+        --extra-index-url https://pypi.org/simple \
+        -r requirements.txt
 
 # ── Copy Application Code ───────────────────────────────────────────────────
 COPY . .

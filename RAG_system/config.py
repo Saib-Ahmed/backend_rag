@@ -15,9 +15,6 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 # LLM_MODEL: The primary reasoning and text generation large language model name in Ollama.
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen3.5:9b")
 
-# VISION_MODEL: The multimodal vision model used for high-accuracy OCR and layout analysis fallbacks.
-VISION_MODEL = os.getenv("VISION_MODEL", "glm-ocr:q8_0")
-
 # EMBEDDING_MODEL: The model identifier used for generating semantic dense vector embeddings.
 EMBEDDING_MODEL = os.getenv("EMBED_MODEL", "qwen3-embedding:4b")
 
@@ -57,18 +54,10 @@ MIN_CHUNK_TOKENS = 60
 # MIN_EMBEDDABLE_TOKENS: Absolute minimum token threshold — chunks below this are entirely discarded from indexing.
 MIN_EMBEDDABLE_TOKENS = 15
 
-# Parsing Configuration
-# CC-4: DOCLING_MAX_PAGES is enforced in parser.py — PDFs with more pages fall back to OCR-only.
-
-# DPI: The dots per inch resolution used when rendering PDF pages to images for OCR parsing.
-DPI = 200
-
-# Docling Advanced Settings
-
 # Qdrant Configuration
 
 # QDRANT_PATH: Local filesystem directory where the persistent Qdrant vector database files are stored.
-QDRANT_PATH = "./qdrant_db"
+QDRANT_PATH = os.getenv("QDRANT_STORAGE_PATH_V1", "./qdrant_db")
 
 # QDRANT_STORAGE_PATH: Storage location alias/path for Qdrant local storage configurations.
 QDRANT_STORAGE_PATH = QDRANT_PATH
@@ -248,10 +237,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 
 # YOLO_MODEL_PATH: Path to the pre-trained YOLO model used for high-fidelity document layout structure detection.
-YOLO_MODEL_PATH = BASE_DIR / "new_ingestion" / "YOLO_Layout_Model" / "doclayout_yolo_docstructbench_imgsz1024.pt"
+YOLO_MODEL_PATH = Path(os.getenv("YOLO_MODEL_PATH_V1", BASE_DIR / "new_ingestion" / "YOLO_Layout_Model" / "doclayout_yolo_docstructbench_imgsz1024.pt"))
 
 # TRANSFORMER_MODEL_PATH: Directory path containing the Table Transformer model weights for reconstructing parsed tables.
-TRANSFORMER_MODEL_PATH = BASE_DIR / "new_ingestion" / "Table_Trans_Model"
+TRANSFORMER_MODEL_PATH = Path(os.getenv("TRANSFORMER_MODEL_PATH_V1", BASE_DIR / "new_ingestion" / "Table_Trans_Model"))
 
 # MD_OUTPUT_DIR: Output folder location where intermediate Markdown files from parsed documents are written.
 MD_OUTPUT_DIR = BASE_DIR / "md_output"
@@ -624,6 +613,6 @@ Answer only what was found. Skip what wasn't. No disclaimers.
 Your Answer:"""
 
 # ── Ollama Reranker Settings ───────────────────────────────────────────
-OLLAMA_RERANKER_MODEL = os.getenv("OLLAMA_RERANKER_MODEL", "dengcao/Qwen3-Reranker-0.6B:Q8_0")
+OLLAMA_RERANKER_MODEL = os.getenv("OLLAMA_RERANKER_MODEL", "dengcao/Qwen3-Reranker-4B:Q4_K_M")
 RERANKER_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 RERANKER_INSTRUCTION = "Retrieve passages that are relevant to the given query and contain useful information to answer it."
