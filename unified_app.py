@@ -25,6 +25,11 @@ from unified_db import (
 app = FastAPI(title="Unified RAG API")
 
 
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
+
+
 class _ExcludeUploadStatusAccessLog(logging.Filter):
     """Hide high-frequency polling access logs for /upload/status/* endpoints."""
 

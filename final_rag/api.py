@@ -49,6 +49,11 @@ logger = logging.getLogger("api")
 
 app = FastAPI(title="c-net RAG API", version="1.0.0")
 
+
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
+
 _raw_origins    = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",")]
 

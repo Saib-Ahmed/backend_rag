@@ -186,6 +186,11 @@ def get_engine() -> RAGEngine:
 
 app = FastAPI(title="Local RAG API", version="1.0")
 
+
+@app.get("/ping")
+def ping():
+    return {"status": "ok"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
