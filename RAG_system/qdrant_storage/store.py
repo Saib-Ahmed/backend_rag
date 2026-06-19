@@ -65,7 +65,6 @@ class QdrantManager:
                 self.client = QdrantClient(
                     path=path_str,
                     timeout=30,
-                    prefer_grpc=True,
                 )
                 self.client.get_collections()
                 _CLIENT_CACHE[path_str] = self.client
@@ -81,7 +80,6 @@ class QdrantManager:
             self._async_client = AsyncQdrantClient(
                 path=path_str,
                 timeout=30,
-                prefer_grpc=True,
             )
         return self._async_client
 
@@ -98,7 +96,6 @@ class QdrantManager:
             self.client = QdrantClient(
                 path=path_str,
                 timeout=30,
-                prefer_grpc=True,
             )
             _CLIENT_CACHE[path_str] = self.client
             return self.client

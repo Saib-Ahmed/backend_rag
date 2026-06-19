@@ -49,7 +49,6 @@ class QdrantManager:
             self.client = QdrantClient(
                 path=str(self.storage_path),
                 timeout=30,
-                prefer_grpc=True,
             )
             self.client.get_collections()
             logger.info("Qdrant connection established")
@@ -67,7 +66,6 @@ class QdrantManager:
             self.client = QdrantClient(
                 path=str(self.storage_path),
                 timeout=30,
-                prefer_grpc=True,
             )
             return self.client
 
