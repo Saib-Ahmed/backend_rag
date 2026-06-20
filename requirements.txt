@@ -26,5 +26,8 @@ requests
 sentence-transformers
 SpeechRecognition
 tiktoken
+timm
+torch
+torchvision
 transformers>=4.40.0
 uvicorn>=0.29.0
