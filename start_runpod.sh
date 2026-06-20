@@ -16,6 +16,53 @@ echo "       Persistent Volume Hugging Face Cache: $HF_HOME"
 mkdir -p "$OLLAMA_MODELS"
 mkdir -p "$HF_HOME"
 
+# ── 1.5 Auto-heal Missing Models on /runpod-volume ─────────────────────
+echo "Checking for missing models on persistent volume..."
+
+heal_file() {
+    local env_val="$1"
+    local local_src="$2"
+    local label="$3"
+    
+    if [ -n "$env_val" ]; then
+        if [[ "$env_val" == /runpod-volume/* ]]; then
+            if [ ! -f "$env_val" ]; then
+                echo "       → [Auto-heal] $label missing at $env_val. Copying from $local_src..."
+                mkdir -p "$(dirname "$env_val")"
+                cp "$local_src" "$env_val"
+                echo "       → [Auto-heal] Finished copying $label."
+            else
+                echo "       → $label found at $env_val."
+            fi
+        fi
+    fi
+}
+
+heal_dir() {
+    local env_val="$1"
+    local local_src="$2"
+    local label="$3"
+    
+    if [ -n "$env_val" ]; then
+        if [[ "$env_val" == /runpod-volume/* ]]; then
+            if [ ! -d "$env_val" ] || [ -z "$(ls -A "$env_val" 2>/dev/null)" ]; then
+                echo "       → [Auto-heal] $label missing or empty at $env_val. Copying from $local_src..."
+                mkdir -p "$env_val"
+                cp -r "$local_src"/. "$env_val"/
+                echo "       → [Auto-heal] Finished copying $label."
+            else
+                echo "       → $label found at $env_val."
+            fi
+        fi
+    fi
+}
+
+heal_file "$YOLO_MODEL_PATH" "/app/final_rag/ingestion/YOLO_Layout_Model/doclayout_yolo_docstructbench_imgsz1024.pt" "YOLO V2 Model"
+heal_file "$YOLO_MODEL_PATH_V1" "/app/RAG_system/new_ingestion/YOLO_Layout_Model/doclayout_yolo_docstructbench_imgsz1024.pt" "YOLO V1 Model"
+heal_dir "$TRANSFORMER_MODEL_PATH" "/app/final_rag/ingestion/Table_Trans_Model" "Table Transformer V2 Model"
+heal_dir "$TRANSFORMER_MODEL_PATH_V1" "/app/RAG_system/new_ingestion/Table_Trans_Model" "Table Transformer V1 Model"
+
+
 # ── 2. Start Ollama in background ──────────────────────────────────────
 echo "[1/3] Starting Ollama server..."
 ollama serve > /var/log/ollama.log 2>&1 &
