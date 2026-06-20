@@ -10,8 +10,8 @@
 FROM --platform=linux/amd64 ollama/ollama:latest AS ollama_builder
 RUN rm -rf /usr/lib/ollama/runners/rocm
 
-# ── Stage 2: Main Image ──────────────────────────────────────────────────────
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+# ── Stage 2: Main Image (Using base instead of runtime to save ~1.3GB) ───────
+FROM nvidia/cuda:12.4.1-base-ubuntu22.04
 
 # ── Environment ──────────────────────────────────────────────────────────────
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -49,7 +49,9 @@ RUN pip install --no-cache-dir uv && \
     uv pip install --system --no-cache \
         --index-url https://download.pytorch.org/whl/cu124 \
         --extra-index-url https://pypi.org/simple \
-        -r requirements.txt
+        -r requirements.txt && \
+    find /usr/local/lib/python3.11 -name "*.pyc" -delete && \
+    find /usr/local/lib/python3.11 -type d -name "tests" -exec rm -rf {} +
 
 # ── Copy Application Code ───────────────────────────────────────────────────
 COPY . .
