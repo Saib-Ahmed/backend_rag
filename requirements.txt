@@ -10,6 +10,7 @@ imageio-ffmpeg
 llama-index-core>=0.14.0
 llama-index-instrumentation>=0.5.0
 llama-index-workflows>=2.20.0
+langchain-core
 neo4j>=5.0.0
 numpy
 ollama>=0.1.6
