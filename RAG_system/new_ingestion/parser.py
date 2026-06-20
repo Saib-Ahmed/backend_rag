@@ -163,8 +163,14 @@ DEVICE = _get_device()
 logger.info("Loading YOLOv10 layout model...")
 yolo_model = YOLOv10(str(YOLO_MODEL_PATH))
 logger.info("Loading Table Transformer model...")
-table_processor = AutoImageProcessor.from_pretrained(str(TRANSFORMER_MODEL_PATH))
-table_model     = TableTransformerForObjectDetection.from_pretrained(str(TRANSFORMER_MODEL_PATH))
+try:
+    table_processor = AutoImageProcessor.from_pretrained(str(TRANSFORMER_MODEL_PATH))
+    table_model     = TableTransformerForObjectDetection.from_pretrained(str(TRANSFORMER_MODEL_PATH))
+except Exception as e:
+    logger.warning("Failed to load Table Transformer locally from %s (%s). Falling back to Hugging Face Hub...", TRANSFORMER_MODEL_PATH, e)
+    table_processor = AutoImageProcessor.from_pretrained("microsoft/table-transformer-structure-recognition")
+    table_model     = TableTransformerForObjectDetection.from_pretrained("microsoft/table-transformer-structure-recognition")
+
 
 
 # ── Layout helpers ─────────────────────────────────────────────────────
