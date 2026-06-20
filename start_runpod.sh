@@ -38,21 +38,8 @@ until curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; do
 done
 echo "       Ollama is ready! (took ${ELAPSED}s)"
 
-# ── 3. Verify / Cache Ollama Models ────────────────────────────────────
-echo "[2/3] Verifying/Caching models on persistent storage..."
-MODELS=("qwen3.5:9b" "qwen3-embedding:4b" "dengcao/Qwen3-Reranker-4B:Q4_K_M")
-
-for model in "${MODELS[@]}"; do
-    if ! ollama list | grep -q "$model"; then
-        echo "       → Pulling $model to persistent volume (one-time operation)..."
-        ollama pull "$model"
-    else
-        echo "       → $model is already cached on persistent volume."
-    fi
-done
-
 # ── 3. Launch all backend services ────────────────────────────────────
-echo "[3/3] Starting backend services..."
+echo "[2/3] Starting backend services immediately..."
 
 cd /app
 
@@ -69,6 +56,24 @@ echo "       → RAG V2 Engine (port 8003)"
 cd /app
 python -m uvicorn final_rag.api:app --host 0.0.0.0 --port 8003 &
 RAG2_PID=$!
+
+# ── 4. Verify / Cache Ollama Models in background ─────────────────────
+echo "[3/3] Starting model caching in background..."
+MODELS=("qwen3.5:9b" "qwen3-embedding:4b" "dengcao/Qwen3-Reranker-4B:Q4_K_M")
+
+pull_models() {
+    for model in "${MODELS[@]}"; do
+        if ! ollama list | grep -q "$model"; then
+            echo "       → Pulling $model to persistent volume (one-time operation)..."
+            ollama pull "$model" || echo "WARNING: Failed to pull $model"
+        else
+            echo "       → $model is already cached on persistent volume."
+        fi
+    done
+    echo "       → All background model downloads complete!"
+}
+pull_models &
+PULL_PID=$!
 
 echo ""
 echo "============================================"
