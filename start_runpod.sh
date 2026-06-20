@@ -18,18 +18,21 @@ mkdir -p "$HF_HOME"
 
 # ── 2. Start Ollama in background ──────────────────────────────────────
 echo "[1/3] Starting Ollama server..."
-ollama serve &
+ollama serve > /var/log/ollama.log 2>&1 &
 OLLAMA_PID=$!
 
-# Wait until Ollama is ready (max 60 seconds)
+# Wait until Ollama is ready (max 120 seconds)
 echo "       Waiting for Ollama to become healthy..."
-MAX_WAIT=60
+MAX_WAIT=120
 ELAPSED=0
 until curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; do
     sleep 1
     ELAPSED=$((ELAPSED + 1))
     if [ $ELAPSED -ge $MAX_WAIT ]; then
         echo "ERROR: Ollama failed to start within ${MAX_WAIT}s"
+        echo "=== OLLAMA LOGS ==="
+        cat /var/log/ollama.log || true
+        echo "==================="
         exit 1
     fi
 done
