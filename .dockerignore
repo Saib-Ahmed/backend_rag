@@ -30,3 +30,6 @@
 **/tmp/
 **/doc_input/
 **/checkpoints/
+**/scratch/
+**/test.py
+**/test_runpod.py
