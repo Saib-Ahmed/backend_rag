@@ -61,7 +61,7 @@ upload_tasks = {}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -499,6 +499,35 @@ async def transcribe_audio(file: UploadFile = File(...)):
         if os.path.exists(tmp_in_path): os.remove(tmp_in_path)
         if os.path.exists(tmp_out_path): os.remove(tmp_out_path)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/ollama")
+def debug_ollama():
+    try:
+        import subprocess
+        # Check running processes
+        ps_out = subprocess.check_output(["ps", "aux"], text=True)
+        # Check ollama status
+        try:
+            ollama_ps = subprocess.check_output(["ollama", "ps"], text=True)
+        except Exception as e:
+            ollama_ps = f"Ollama ps failed: {e}"
+            
+        # Read last 100 lines of ollama log
+        log_out = ""
+        if os.path.exists("/var/log/ollama.log"):
+            with open("/var/log/ollama.log", "r") as f:
+                lines = f.readlines()
+                log_out = "".join(lines[-100:])
+        else:
+            log_out = "/var/log/ollama.log not found"
+            
+        return {
+            "ps": ps_out,
+            "ollama_ps": ollama_ps,
+            "ollama_log": log_out
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
