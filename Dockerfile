@@ -6,6 +6,11 @@
 # Pre-pulls Ollama models at build time so they're baked into the image.
 # ============================================================================
 
+# ── Stage 1: Filter Ollama (Remove AMD ROCm to avoid Docker layer size trap) ─
+FROM --platform=linux/amd64 ollama/ollama:latest AS ollama_builder
+RUN rm -rf /usr/lib/ollama/runners/rocm
+
+# ── Stage 2: Main Image ──────────────────────────────────────────────────────
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 # ── Environment ──────────────────────────────────────────────────────────────
@@ -30,9 +35,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip install --upgrade pip \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Install Ollama ───────────────────────────────────────────────────────────
-COPY --from=ollama/ollama:latest /usr/bin/ollama /usr/bin/ollama
-COPY --from=ollama/ollama:latest /usr/lib/ollama /usr/lib/ollama
+# ── Install Ollama (Copy pre-filtered binaries from Stage 1) ─────────────────
+COPY --from=ollama_builder /usr/bin/ollama /usr/bin/ollama
+COPY --from=ollama_builder /usr/lib/ollama /usr/lib/ollama
 
 # ── Python Dependencies ─────────────────────────────────────────────────────
 WORKDIR /app
