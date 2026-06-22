@@ -654,11 +654,11 @@ def get_stats():
         points, _ = db.client.scroll(
             collection_name=db.collection_name, 
             limit=10000, 
-            with_payload=True, 
+            with_payload=["source_file"], 
             with_vectors=False
         )
         for point in points:
-            src = point.payload.get("source_file") or point.payload.get("source") or point.payload.get("file_name") or point.payload.get("source_name")
+            src = point.payload.get("source_file")
             if src:
                 files.add(str(src))
     except Exception as e:

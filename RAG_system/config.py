@@ -3,7 +3,13 @@ Configuration settings for the Local RAG System.
 Modify these values to experiment with different parameters.
 """
 import os
+from pathlib import Path
+
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
+BASE_DIR = Path(__file__).parent
+RAG_TMP_DIR = Path(os.getenv("RAG_TMP_DIR", BASE_DIR / "tmp"))
+os.makedirs(RAG_TMP_DIR, exist_ok=True)
 
 
 # Ollama Model Configuration

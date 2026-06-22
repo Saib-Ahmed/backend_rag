@@ -248,13 +248,13 @@ class RAGEngine:
         # --- Debug dump extraction ---
         try:
             import re
-            os.makedirs("tmp", exist_ok=True)
+            os.makedirs(config.RAG_TMP_DIR, exist_ok=True)
             safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', source_name)
             
             def write_debug_md():
-                with open("tmp/latest_extraction.md", "w", encoding="utf-8") as f:
+                with open(config.RAG_TMP_DIR / "latest_extraction.md", "w", encoding="utf-8") as f:
                     f.write(parse_res.markdown)
-                with open(f"tmp/{safe_name}_extraction.md", "w", encoding="utf-8") as f:
+                with open(config.RAG_TMP_DIR / f"{safe_name}_extraction.md", "w", encoding="utf-8") as f:
                     f.write(parse_res.markdown)
             await asyncio.to_thread(write_debug_md)
         except Exception as e:
@@ -271,17 +271,17 @@ class RAGEngine:
         try:
             import re
             import json
-            os.makedirs("tmp", exist_ok=True)
+            os.makedirs(config.RAG_TMP_DIR, exist_ok=True)
             safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', source_name)
             
             def write_debug_chunks():
-                with open("tmp/latest_chunks.md", "w", encoding="utf-8") as f:
+                with open(config.RAG_TMP_DIR / "latest_chunks.md", "w", encoding="utf-8") as f:
                     for c in chunks:
                         f.write(f"--- Chunk {c.chunk_index} ({c.token_count} tokens) ---\n")
                         f.write(f"Tags: Page {c.page_label} | Section: {c.section} | Table: {c.is_table}\n\n")
                         f.write(c.text + "\n\n")
 
-                with open(f"tmp/{safe_name}_chunks.md", "w", encoding="utf-8") as f:
+                with open(config.RAG_TMP_DIR / f"{safe_name}_chunks.md", "w", encoding="utf-8") as f:
                     for c in chunks:
                         f.write(f"## Chunk {c.chunk_index}\n\n")
                         f.write("```json\n")

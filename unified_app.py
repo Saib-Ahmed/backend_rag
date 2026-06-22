@@ -126,7 +126,7 @@ def get_combined_stats():
         "v2": {"status": "offline", "num_chunks": 0, "graph": {"entities": 0, "relationships": 0}}
     }
     try:
-        res = requests.get("http://localhost:8002/api/stats", timeout=3)
+        res = requests.get("http://127.0.0.1:8002/api/stats", timeout=5)
         if res.status_code == 200:
             stats["v1"] = res.json()
     except Exception as e:
@@ -134,7 +134,7 @@ def get_combined_stats():
         pass
     
     try:
-        res = requests.get("http://localhost:8003/api/stats", timeout=3)
+        res = requests.get("http://127.0.0.1:8003/api/stats", timeout=5)
         if res.status_code == 200:
             stats["v2"] = res.json()
     except Exception as e:
@@ -155,7 +155,7 @@ def chat_stream(req: ChatRequest):
     def generate_v1():
         # Proxy to RAG_system (port 8002) with true real-time SSE streaming
         try:
-            res = requests.post("http://localhost:8002/api/query/stream", json={
+            res = requests.post("http://127.0.0.1:8002/api/query/stream", json={
                 "question": req.query,
                 "session_id": session_id,
                 "use_live_search": True,
@@ -174,7 +174,7 @@ def chat_stream(req: ChatRequest):
     def generate_v2():
         # Proxy to final_rag (port 8003)
         try:
-            res = requests.post("http://localhost:8003/chat/stream", json={
+            res = requests.post("http://127.0.0.1:8003/chat/stream", json={
                 "query": req.query,
                 "session_id": session_id
             }, stream=True, timeout=900)
@@ -211,11 +211,11 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
     try:
         logging.info(f"[Background Task {task_id}] Started for file: {filename}")
         if rag_version in ["version2", "v2"]:
-            target_url = "http://localhost:8003/upload"
+            target_url = "http://127.0.0.1:8003/upload"
             files_payload = {"file": (filename, file_content, content_type)}
             res = requests.post(target_url, files=files_payload, timeout=900)
         else:
-            target_url = "http://localhost:8002/api/ingest"
+            target_url = "http://127.0.0.1:8002/api/ingest"
             files_payload = {"files": (filename, file_content, content_type)}
             data_payload = {
                 "parsing_mode": "SMART",
@@ -291,9 +291,9 @@ def get_upload_status(task_id: str):
 def search_documents_route(q: str = Query(..., min_length=1), rag_version: str = Query("version1")):
     try:
         if rag_version == "version1":
-            target_url = "http://localhost:8002/api/documents/search"
+            target_url = "http://127.0.0.1:8002/api/documents/search"
         else:
-            target_url = "http://localhost:8003/api/documents/search"
+            target_url = "http://127.0.0.1:8003/api/documents/search"
             
         res = requests.get(target_url, params={"q": q}, timeout=30)
         
@@ -314,9 +314,9 @@ def get_document_content_route(file_name: str, rag_version: str = Query("version
         import urllib.parse
         encoded_name = urllib.parse.quote(file_name)
         if rag_version == "version1":
-            target_url = f"http://localhost:8002/api/documents/{encoded_name}/content"
+            target_url = f"http://127.0.0.1:8002/api/documents/{encoded_name}/content"
         else:
-            target_url = f"http://localhost:8003/api/documents/{encoded_name}/content"
+            target_url = f"http://127.0.0.1:8003/api/documents/{encoded_name}/content"
             
         res = requests.get(target_url, timeout=30)
         
@@ -340,9 +340,9 @@ def update_document_content_route(file_name: str, req: DocumentContentUpdateUnif
         import urllib.parse
         encoded_name = urllib.parse.quote(file_name)
         if rag_version == "version1":
-            target_url = f"http://localhost:8002/api/documents/{encoded_name}/content"
+            target_url = f"http://127.0.0.1:8002/api/documents/{encoded_name}/content"
         else:
-            target_url = f"http://localhost:8003/api/documents/{encoded_name}/content"
+            target_url = f"http://127.0.0.1:8003/api/documents/{encoded_name}/content"
             
         res = requests.put(target_url, json={"content": req.content}, timeout=300)
         
@@ -364,9 +364,9 @@ def delete_document_route(file_name: str, rag_version: str = Query("version1")):
         import urllib.parse
         encoded_name = urllib.parse.quote(file_name)
         if rag_version == "version1":
-            target_url = f"http://localhost:8002/api/documents/{encoded_name}"
+            target_url = f"http://127.0.0.1:8002/api/documents/{encoded_name}"
         else:
-            target_url = f"http://localhost:8003/documents/{encoded_name}"
+            target_url = f"http://127.0.0.1:8003/documents/{encoded_name}"
             
         res = requests.delete(target_url, timeout=30)
         
@@ -381,9 +381,9 @@ def delete_document_route(file_name: str, rag_version: str = Query("version1")):
 def clear_all_documents_route(rag_version: str = Query("version1")):
     try:
         if rag_version == "version1":
-            target_url = "http://localhost:8002/api/documents"
+            target_url = "http://127.0.0.1:8002/api/documents"
         else:
-            target_url = "http://localhost:8003/api/documents"
+            target_url = "http://127.0.0.1:8003/api/documents"
             
         res = requests.delete(target_url, timeout=60)
         
@@ -403,9 +403,9 @@ async def preview_parse_route(
     try:
         file_bytes = await file.read()
         if rag_version == "version1":
-            target_url = "http://localhost:8002/api/documents/preview-parse"
+            target_url = "http://127.0.0.1:8002/api/documents/preview-parse"
         else:
-            target_url = "http://localhost:8003/api/documents/preview-parse"
+            target_url = "http://127.0.0.1:8003/api/documents/preview-parse"
 
         files_payload = {"file": (file.filename, file_bytes, file.content_type)}
         res = requests.post(target_url, files=files_payload, timeout=900)
@@ -431,9 +431,9 @@ async def replace_document_route(
     try:
         file_bytes = await file.read()
         if rag_version == "version1":
-            target_url = "http://localhost:8002/api/documents/replace"
+            target_url = "http://127.0.0.1:8002/api/documents/replace"
         else:
-            target_url = "http://localhost:8003/api/documents/replace"
+            target_url = "http://127.0.0.1:8003/api/documents/replace"
 
         files_payload = {"file": (file.filename, file_bytes, file.content_type)}
         data_payload = {"old_file_name": old_file_name}
@@ -454,7 +454,7 @@ async def replace_document_route(
 def get_query_trace_route(rag_version: str = Query("version1")):
     try:
         if rag_version == "version1":
-            target_url = "http://localhost:8002/api/query_trace"
+            target_url = "http://127.0.0.1:8002/api/query_trace"
             res = requests.get(target_url, timeout=30)
             if res.status_code == 200:
                 return res.json()

@@ -1846,8 +1846,8 @@ OUTPUT FORMAT (strict JSON, no markdown):
 
         # Step 3: Write latest_graph to tmp
         try:
-            os.makedirs("tmp", exist_ok=True)
-            with open("tmp/latest_graph.md", "w", encoding="utf-8") as f:
+            os.makedirs(config.RAG_TMP_DIR, exist_ok=True)
+            with open(config.RAG_TMP_DIR / "latest_graph.md", "w", encoding="utf-8") as f:
                 for doc, extraction in extractions:
                     if extraction is None or not extraction.entities:
                         continue

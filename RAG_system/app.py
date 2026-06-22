@@ -44,6 +44,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from rag_engine import RAGEngine
+import config
 from new_ingestion.parser import ParsingMode
 from live_search import LiveSearchEngine, load_live_mappings, save_live_mappings
 from session_store import (
@@ -629,7 +630,7 @@ def search_documents(q: str = Query(..., min_length=1)) -> List[Dict[str, Any]]:
     
     for source in sources:
         safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', source)
-        filepath = f"tmp/{safe_name}_extraction.md"
+        filepath = os.path.join(config.RAG_TMP_DIR, f"{safe_name}_extraction.md")
         matches = 0
         snippets = []
         
@@ -690,7 +691,7 @@ def search_documents(q: str = Query(..., min_length=1)) -> List[Dict[str, Any]]:
 @app.get("/api/documents/{file_name}/content")
 def get_document_content(file_name: str) -> Dict[str, Any]:
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
-    filepath = f"tmp/{safe_name}_extraction.md"
+    filepath = os.path.join(config.RAG_TMP_DIR, f"{safe_name}_extraction.md")
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Content not found")
     with open(filepath, "r", encoding="utf-8") as f:
@@ -701,9 +702,9 @@ def get_document_content(file_name: str) -> Dict[str, Any]:
 def update_document_content(file_name: str, payload: DocumentContentUpdate) -> Dict[str, Any]:
     engine = get_engine()
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
-    filepath = f"tmp/{safe_name}_extraction.md"
+    filepath = os.path.join(config.RAG_TMP_DIR, f"{safe_name}_extraction.md")
     
-    os.makedirs("tmp", exist_ok=True)
+    os.makedirs(config.RAG_TMP_DIR, exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(payload.content)
         
@@ -827,7 +828,7 @@ async def replace_document(
     try:
         safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', old_file_name)
         for suffix in ["_extraction.md", "_chunks.md"]:
-            old_path = f"tmp/{safe_name}{suffix}"
+            old_path = os.path.join(config.RAG_TMP_DIR, f"{safe_name}{suffix}")
             if os.path.exists(old_path):
                 os.remove(old_path)
                 logger.info(f"Deleted old file: {old_path}")
@@ -882,11 +883,11 @@ def get_stats() -> Dict[str, Any]:
         points, _ = engine.client.scroll(
             collection_name=engine.db.collection_name, 
             limit=10000, 
-            with_payload=True, 
+            with_payload=["source_file"], 
             with_vectors=False
         )
         for point in points:
-            src = point.payload.get("source_file") or point.payload.get("source") or point.payload.get("source_name")
+            src = point.payload.get("source_file")
             if src:
                 files.add(str(src))
     except Exception as e:
