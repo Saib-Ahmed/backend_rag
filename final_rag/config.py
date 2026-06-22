@@ -94,7 +94,4 @@ MAX_TOKENS        = 3000
 # ── Layout Model Paths ────────────────────────────────────────────────
 YOLO_MODEL_PATH        = Path(os.getenv("YOLO_MODEL_PATH", BASE_DIR / "ingestion" / "YOLO_Layout_Model" / "doclayout_yolo_docstructbench_imgsz1024.pt"))
 TRANSFORMER_MODEL_PATH = Path(os.getenv("TRANSFORMER_MODEL_PATH", BASE_DIR / "ingestion" / "Table_Trans_Model"))
-# ── Ollama Reranker Settings ───────────────────────────────────────────
-OLLAMA_RERANKER_MODEL = os.getenv("OLLAMA_RERANKER_MODEL", "dengcao/Qwen3-Reranker-4B:Q4_K_M")
-RERANKER_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
-RERANKER_INSTRUCTION = "Retrieve passages that are relevant to the given query and contain useful information to answer it."
+

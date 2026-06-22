@@ -9,6 +9,12 @@ echo "============================================"
 export OLLAMA_MODELS="/runpod-volume/ollama_models"
 export HF_HOME="/runpod-volume/hf_cache"
 export HF_HUB_DISABLE_SYMLINKS=1
+export YOLO_MODEL_PATH="/runpod-volume/models/YOLO_Layout_Model/doclayout_yolo_docstructbench_imgsz1024.pt"
+export YOLO_MODEL_PATH_V1="/runpod-volume/models/YOLO_Layout_Model/doclayout_yolo_docstructbench_imgsz1024.pt"
+export TRANSFORMER_MODEL_PATH="/runpod-volume/models/Table_Trans_Model"
+export TRANSFORMER_MODEL_PATH_V1="/runpod-volume/models/Table_Trans_Model"
+export QDRANT_STORAGE_PATH="/runpod-volume/qdrant_db/final_rag"
+export QDRANT_STORAGE_PATH_V1="/runpod-volume/qdrant_db/rag_system"
 
 echo "       Persistent Volume Ollama Cache:     $OLLAMA_MODELS"
 echo "       Persistent Volume Hugging Face Cache: $HF_HOME"
@@ -106,7 +112,7 @@ RAG2_PID=$!
 
 # ── 4. Verify / Cache Ollama Models in background ─────────────────────
 echo "[3/3] Starting model caching in background..."
-MODELS=("qwen3.5:9b" "qwen3-embedding:4b" "dengcao/Qwen3-Reranker-4B:Q4_K_M")
+MODELS=("qwen3.5:9b" "qwen3-embedding:4b")
 
 pull_models() {
     for model in "${MODELS[@]}"; do

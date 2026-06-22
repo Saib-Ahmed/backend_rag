@@ -612,7 +612,4 @@ Answer only what was found. Skip what wasn't. No disclaimers.
 
 Your Answer:"""
 
-# ── Ollama Reranker Settings ───────────────────────────────────────────
-OLLAMA_RERANKER_MODEL = os.getenv("OLLAMA_RERANKER_MODEL", "dengcao/Qwen3-Reranker-4B:Q4_K_M")
-RERANKER_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
-RERANKER_INSTRUCTION = "Retrieve passages that are relevant to the given query and contain useful information to answer it."
+
