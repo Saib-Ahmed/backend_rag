@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
 bcrypt
 beautifulsoup4
 certifi

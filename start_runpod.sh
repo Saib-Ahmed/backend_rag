@@ -75,8 +75,13 @@ heal_dir "$TRANSFORMER_MODEL_PATH_V1" "/app/RAG_system/new_ingestion/Table_Trans
 
 # ── 2. Start Ollama in background ──────────────────────────────────────
 echo "[1/3] Starting Ollama server..."
-ollama serve > /var/log/ollama.log 2>&1 &
-OLLAMA_PID=$!
+if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+    echo "       Ollama is already running!"
+    OLLAMA_PID=""
+else
+    ollama serve > /var/log/ollama.log 2>&1 &
+    OLLAMA_PID=$!
+fi
 
 # Wait until Ollama is ready (max 120 seconds)
 echo "       Waiting for Ollama to become healthy..."
@@ -154,6 +159,11 @@ shutdown() {
 trap shutdown SIGTERM SIGINT
 
 # Keep container alive — wait for any child to exit
-wait -n $GATEWAY_PID $RAG1_PID $RAG2_PID $OLLAMA_PID
+PIDS_TO_WAIT=("$GATEWAY_PID" "$RAG1_PID" "$RAG2_PID")
+if [ -n "$OLLAMA_PID" ]; then
+    PIDS_TO_WAIT+=("$OLLAMA_PID")
+fi
+
+wait -n "${PIDS_TO_WAIT[@]}"
 echo "WARNING: A service exited unexpectedly. Shutting down..."
 shutdown
