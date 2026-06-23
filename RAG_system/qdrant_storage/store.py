@@ -12,7 +12,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from qdrant_client import QdrantClient, AsyncQdrantClient
+from qdrant_client import QdrantClient
 
 from qdrant_client.models import (
     Distance,
@@ -53,7 +53,6 @@ class QdrantManager:
         self.storage_path    = Path(config.QDRANT_STORAGE_PATH)
         self.collection_name = config.QDRANT_COLLECTION_NAME
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        self._async_client   = None
 
         path_str = str(self.storage_path.resolve())
         if path_str in _CLIENT_CACHE:
@@ -71,17 +70,6 @@ class QdrantManager:
                 logger.info("Qdrant connection established")
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize Qdrant: {e}") from e
-
-    @property
-    def async_client(self) -> AsyncQdrantClient:
-        if self._async_client is None:
-            path_str = str(self.storage_path.resolve())
-            logger.info("Connecting to AsyncQdrantClient at %s...", self.storage_path)
-            self._async_client = AsyncQdrantClient(
-                path=path_str,
-                timeout=30,
-            )
-        return self._async_client
 
 
     # ── Connection health check ────────────────────────────────────────
@@ -277,30 +265,7 @@ class QdrantManager:
         """
         try:
             logger.info("Async deleting records for: %s", source_file)
-            await self.async_client.delete(
-                collection_name = self.collection_name,
-                points_selector = Filter(
-                    must=[
-                        FieldCondition(
-                            key   = "source_file",
-                            match = MatchValue(value=source_file),
-                        )
-                    ]
-                ),
-                wait=True,
-            )
-            await self.async_client.delete(
-                collection_name = self.collection_name,
-                points_selector = Filter(
-                    must=[
-                        FieldCondition(
-                            key   = "source",
-                            match = MatchValue(value=source_file),
-                        )
-                    ]
-                ),
-                wait=True,
-            )
+            await asyncio.to_thread(self.delete_document, source_file)
             logger.info("Async delete completed for: %s", source_file)
         except Exception as e:
             logger.error("Failed to delete '%s' asynchronously: %s", source_file, e)
@@ -501,26 +466,28 @@ class QdrantManager:
         search_filter = self._build_filter(filter_dict)
 
         try:
-            client = self.async_client
-
-            # ── Fetch dense & sparse candidates concurrently using asyncio.gather ──
-            dense_task = client.query_points(
-                collection_name = self.collection_name,
-                query           = query_dense,
-                using           = "dense",
-                limit           = top_k * 3,
-                with_payload    = True,
-                query_filter    = search_filter,
-            )
+            def query_dense_fn():
+                return self.client.query_points(
+                    collection_name = self.collection_name,
+                    query           = query_dense,
+                    using           = "dense",
+                    limit           = top_k * 3,
+                    with_payload    = True,
+                    query_filter    = search_filter,
+                )
             
-            sparse_task = client.query_points(
-                collection_name = self.collection_name,
-                query           = sparse_vec,
-                using           = "sparse",
-                limit           = top_k * 2,
-                with_payload    = True,
-                query_filter    = search_filter,
-            )
+            def query_sparse_fn():
+                return self.client.query_points(
+                    collection_name = self.collection_name,
+                    query           = sparse_vec,
+                    using           = "sparse",
+                    limit           = top_k * 2,
+                    with_payload    = True,
+                    query_filter    = search_filter,
+                )
+
+            dense_task = asyncio.to_thread(query_dense_fn)
+            sparse_task = asyncio.to_thread(query_sparse_fn)
             
             dense_results, sparse_results = await asyncio.gather(dense_task, sparse_task)
 

@@ -223,14 +223,16 @@ class RAGEngine:
 
         # Deduplication Check
         if self._collection_exists() and file_hash:
-            points, _ = await self.db.async_client.scroll(
-                collection_name=self.db.collection_name,
-                scroll_filter=Filter(
-                    must=[FieldCondition(key="file_hash", match=MatchValue(value=file_hash))]
-                ),
-                limit=1,
-                with_payload=True
-            )
+            def scroll_thread():
+                return self.client.scroll(
+                    collection_name=self.db.collection_name,
+                    scroll_filter=Filter(
+                        must=[FieldCondition(key="file_hash", match=MatchValue(value=file_hash))]
+                    ),
+                    limit=1,
+                    with_payload=True
+                )
+            points, _ = await asyncio.to_thread(scroll_thread)
             if points:
                 logger.info("File %s already ingested (Hash Match). Skipping.", source_name)
                 return 0, source_name

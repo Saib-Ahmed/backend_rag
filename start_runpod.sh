@@ -26,6 +26,19 @@ mkdir -p "$HF_HOME"
 mkdir -p "$MD_OUTPUT_DIR"
 mkdir -p "$RAG_TMP_DIR"
 
+# ── 1.2 Clean Stale Qdrant Locks ─────────────────────────────────────────
+echo "Checking for and cleaning stale Qdrant lock files..."
+if [ -d "$QDRANT_STORAGE_PATH" ]; then
+    echo "       → Removing stale locks in $QDRANT_STORAGE_PATH"
+    rm -f "$QDRANT_STORAGE_PATH"/.lock
+    rm -f "$QDRANT_STORAGE_PATH"/meta.json.lock
+fi
+if [ -d "$QDRANT_STORAGE_PATH_V1" ]; then
+    echo "       → Removing stale locks in $QDRANT_STORAGE_PATH_V1"
+    rm -f "$QDRANT_STORAGE_PATH_V1"/.lock
+    rm -f "$QDRANT_STORAGE_PATH_V1"/meta.json.lock
+fi
+
 # ── 1.5 Auto-heal Missing Models on /runpod-volume ─────────────────────
 echo "Checking for missing models on persistent volume..."
 

@@ -407,7 +407,8 @@ class OllamaEmbedder:
         for start in range(0, total, self.batch_size):
             batch  = reordered[start: start + self.batch_size]
             points = [self._build_point(ec) for ec in batch if ec is not None]
-            await self.db.async_client.upsert(
+            await asyncio.to_thread(
+                self.db.client.upsert,
                 collection_name=config.QDRANT_COLLECTION_NAME,
                 points=points,
             )
