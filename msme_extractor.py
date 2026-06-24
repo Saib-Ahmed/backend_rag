@@ -20,8 +20,12 @@ import re
 import fitz  # PyMuPDF
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file if it exists
+load_dotenv()
 
 # ==========================================
 # Configuration

@@ -17,9 +17,11 @@ export QDRANT_STORAGE_PATH="/runpod-volume/qdrant_db/final_rag"
 export QDRANT_STORAGE_PATH_V1="/runpod-volume/qdrant_db/rag_system"
 export MD_OUTPUT_DIR="/runpod-volume/md_output/final_rag"
 export RAG_TMP_DIR="/runpod-volume/md_output/rag_system"
+export FASTEMBED_CACHE_PATH="/runpod-volume/models/fastembed_cache"
 
 echo "       Persistent Volume Ollama Cache:     $OLLAMA_MODELS"
 echo "       Persistent Volume Hugging Face Cache: $HF_HOME"
+echo "       Persistent Volume FastEmbed Cache:   $FASTEMBED_CACHE_PATH"
 
 mkdir -p "$OLLAMA_MODELS"
 mkdir -p "$HF_HOME"
