@@ -160,11 +160,6 @@ class MsmeExtractor:
         logger.info(f"Gemini extraction for {len(missing_keys)} missing fields from '{filename}'...")
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        dynamic_schema = {
-            "type": "OBJECT",
-            "properties": {key: {"type": "STRING"} for key in missing_keys},
-        }
-
         # Upload the file bytes as a temporary file for the Gemini Files API
         import tempfile
         ext = os.path.splitext(filename)[1] or ".bin"
@@ -172,29 +167,52 @@ class MsmeExtractor:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
+        uploaded_file = None
+        extracted_data = {}
         try:
             uploaded_file = client.files.upload(file=tmp_path)
             time.sleep(2)
 
-            prompt = (
-                "Look at this document directly and read out the values for the "
-                "requested missing fields. Output them strictly structured into the "
-                "schema. If a field is missing, output an empty string."
-            )
+            # Split missing_keys into batches of 20 to prevent schema state space explosion
+            batch_size = 20
+            for i in range(0, len(missing_keys), batch_size):
+                batch_keys = missing_keys[i : i + batch_size]
+                logger.info(f"Extracting Gemini batch {i // batch_size + 1} ({len(batch_keys)} fields)...")
 
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[prompt, uploaded_file],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=dynamic_schema,
-                    temperature=0.0,
-                ),
-            )
+                dynamic_schema = {
+                    "type": "OBJECT",
+                    "properties": {key: {"type": "STRING"} for key in batch_keys},
+                }
 
-            client.files.delete(name=uploaded_file.name)
-            return json.loads(response.text)
+                prompt = (
+                    "Look at this document directly and read out the values for the "
+                    "requested missing fields. Output them strictly structured into the "
+                    "schema. If a field is missing, output an empty string."
+                )
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=[prompt, uploaded_file],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=dynamic_schema,
+                        temperature=0.0,
+                    ),
+                )
+                try:
+                    batch_res = json.loads(response.text)
+                    if isinstance(batch_res, dict):
+                        extracted_data.update(batch_res)
+                except Exception as e:
+                    logger.error(f"Failed to parse batch json: {e}. Text: {response.text}")
+
+            return extracted_data
         finally:
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except Exception as e:
+                    logger.error(f"Failed to delete uploaded Gemini file: {e}")
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
