@@ -243,6 +243,9 @@ class MsmeExtractor:
 
         content_list = [{"type": "text", "text": prompt_text}]
         ext = os.path.splitext(filename)[1].lower()
+        is_image = mime_type.startswith("image/") or ext in (
+            ".png", ".jpg", ".jpeg", ".webp", ".heic", ".gif", ".tiff", ".bmp"
+        )
 
         # Text files — send as inline text
         if ext in (".md", ".txt"):
@@ -250,9 +253,16 @@ class MsmeExtractor:
             content_list[0]["text"] += f"\n\nHere is the document text:\n{document_text}"
 
         # Images — send as base64
-        elif ext in (".png", ".jpg", ".jpeg"):
+        elif is_image:
             b64_img = base64.b64encode(file_bytes).decode("utf-8")
-            img_mime = "image/png" if ext == ".png" else "image/jpeg"
+            img_mime = mime_type
+            if not img_mime or not img_mime.startswith("image/"):
+                if ext == ".png":
+                    img_mime = "image/png"
+                elif ext in (".webp", ".gif"):
+                    img_mime = f"image/{ext[1:]}"
+                else:
+                    img_mime = "image/jpeg"
             content_list.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{img_mime};base64,{b64_img}"},
