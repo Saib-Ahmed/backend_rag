@@ -30,6 +30,15 @@ load_dotenv()
 # ==========================================
 # Configuration
 # ==========================================
+def _is_valid_key(key: str) -> bool:
+    if not key or not key.strip():
+        return False
+    key_lower = key.lower()
+    for placeholder in ("placeholder", "your_gemini", "your_nvidia", "api_key_here", "key_here"):
+        if placeholder in key_lower:
+            return False
+    return True
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
 
@@ -157,58 +166,77 @@ class MsmeExtractor:
     @staticmethod
     def _extract_with_gemini(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
         """Send document bytes to Gemini API and extract missing fields."""
-        if not GEMINI_API_KEY or not GEMINI_API_KEY.strip() or "placeholder" in GEMINI_API_KEY.lower():
+        if not _is_valid_key(GEMINI_API_KEY):
             raise ValueError("GEMINI_API_KEY is not set or is empty in the server environment variables.")
         logger.info(f"Gemini extraction for {len(missing_keys)} missing fields from '{filename}'...")
         client = genai.Client(api_key=GEMINI_API_KEY)
 
+        # Resolve extension and mime-type dynamically
+        resolved_mime = mime_type
+        ext = os.path.splitext(filename)[1].lower()
+        if not resolved_mime or resolved_mime in ("application/octet-stream", "binary/octet-stream"):
+            if ext == ".pdf":
+                resolved_mime = "application/pdf"
+            elif ext in (".jpg", ".jpeg"):
+                resolved_mime = "image/jpeg"
+            elif ext == ".png":
+                resolved_mime = "image/png"
+            elif ext == ".webp":
+                resolved_mime = "image/webp"
+            elif ext == ".txt":
+                resolved_mime = "text/plain"
+            elif ext == ".md":
+                resolved_mime = "text/markdown"
+
+        if not ext:
+            if resolved_mime == "application/pdf":
+                ext = ".pdf"
+            elif resolved_mime in ("image/jpeg", "image/jpg"):
+                ext = ".jpeg"
+            elif resolved_mime == "image/png":
+                ext = ".png"
+            elif resolved_mime == "image/webp":
+                ext = ".webp"
+            elif resolved_mime == "text/plain":
+                ext = ".txt"
+            elif resolved_mime == "text/markdown":
+                ext = ".md"
+            else:
+                ext = ".bin"
+
         # Upload the file bytes as a temporary file for the Gemini Files API
         import tempfile
-        ext = os.path.splitext(filename)[1] or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
         uploaded_file = None
-        extracted_data = {}
         try:
-            uploaded_file = client.files.upload(file=tmp_path)
+            config = types.UploadFileConfig(mime_type=resolved_mime) if resolved_mime else None
+            uploaded_file = client.files.upload(file=tmp_path, config=config)
             time.sleep(2)
 
-            # Split missing_keys into batches of 20 to prevent schema state space explosion
-            batch_size = 20
-            for i in range(0, len(missing_keys), batch_size):
-                batch_keys = missing_keys[i : i + batch_size]
-                logger.info(f"Extracting Gemini batch {i // batch_size + 1} ({len(batch_keys)} fields)...")
+            dynamic_schema = {
+                "type": "OBJECT",
+                "properties": {key: {"type": "STRING"} for key in missing_keys},
+            }
 
-                dynamic_schema = {
-                    "type": "OBJECT",
-                    "properties": {key: {"type": "STRING"} for key in batch_keys},
-                }
+            prompt = (
+                "Look at this document directly and read out the values for the "
+                "requested missing fields. Output them strictly structured into the "
+                "schema. If a field is missing, output an empty string."
+            )
 
-                prompt = (
-                    "Look at this document directly and read out the values for the "
-                    "requested missing fields. Output them strictly structured into the "
-                    "schema. If a field is missing, output an empty string."
-                )
-
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[prompt, uploaded_file],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=dynamic_schema,
-                        temperature=0.0,
-                    ),
-                )
-                try:
-                    batch_res = json.loads(response.text)
-                    if isinstance(batch_res, dict):
-                        extracted_data.update(batch_res)
-                except Exception as e:
-                    logger.error(f"Failed to parse batch json: {e}. Text: {response.text}")
-
-            return extracted_data
+            response = client.models.generate_content(
+                model="gemini-3.5-flash",
+                contents=[prompt, uploaded_file],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=dynamic_schema,
+                    temperature=0.0,
+                ),
+            )
+            return json.loads(response.text)
         finally:
             if uploaded_file:
                 try:
@@ -224,7 +252,7 @@ class MsmeExtractor:
     @staticmethod
     def _extract_with_kimi(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
         """Fallback extraction using Moonshot Kimi-K2.6 via NVIDIA."""
-        if not NVIDIA_API_KEY or not NVIDIA_API_KEY.strip() or "placeholder" in NVIDIA_API_KEY.lower():
+        if not _is_valid_key(NVIDIA_API_KEY):
             raise ValueError("NVIDIA_API_KEY is not set or is empty in the server environment variables.")
         logger.info(f"Kimi fallback extraction for {len(missing_keys)} fields from '{filename}'...")
         invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -243,12 +271,14 @@ class MsmeExtractor:
 
         content_list = [{"type": "text", "text": prompt_text}]
         ext = os.path.splitext(filename)[1].lower()
+
+        is_text = mime_type in ("text/plain", "text/markdown") or ext in (".md", ".txt")
         is_image = mime_type.startswith("image/") or ext in (
             ".png", ".jpg", ".jpeg", ".webp", ".heic", ".gif", ".tiff", ".bmp"
         )
 
         # Text files — send as inline text
-        if ext in (".md", ".txt"):
+        if is_text:
             document_text = file_bytes.decode("utf-8", errors="replace")
             content_list[0]["text"] += f"\n\nHere is the document text:\n{document_text}"
 
@@ -270,16 +300,21 @@ class MsmeExtractor:
 
         # PDFs — render each page to JPEG via PyMuPDF
         else:
-            pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
-            for page_num in range(len(pdf_document)):
-                page = pdf_document.load_page(page_num)
-                pix = page.get_pixmap(dpi=150)
-                img_bytes = pix.tobytes("jpeg")
-                b64_img = base64.b64encode(img_bytes).decode("utf-8")
-                content_list.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
-                })
+            try:
+                pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+                for page_num in range(len(pdf_document)):
+                    page = pdf_document.load_page(page_num)
+                    pix = page.get_pixmap(dpi=150)
+                    img_bytes = pix.tobytes("jpeg")
+                    b64_img = base64.b64encode(img_bytes).decode("utf-8")
+                    content_list.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
+                    })
+            except Exception as pdf_err:
+                logger.warning(f"Could not open file as PDF: {pdf_err}. Falling back to plain text.")
+                document_text = file_bytes.decode("utf-8", errors="replace")
+                content_list[0]["text"] += f"\n\nHere is the document text:\n{document_text}"
 
         payload = {
             "model": "moonshotai/kimi-k2.6",
@@ -295,7 +330,7 @@ class MsmeExtractor:
         response.raise_for_status()
         result = response.json()
         content = result["choices"][0]["message"]["content"]
-        
+
         # Parse output JSON robustly
         try:
             return json.loads(content.strip())
