@@ -60,6 +60,7 @@ _configure_access_log_filters()
 # Global task registry for background uploads
 # Format: { "task_id": {"status": "processing" | "success" | "failed" | "already_exists", "data": {...}, "error": "..."} }
 upload_tasks = {}
+msme_upload_tasks = {}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -610,30 +611,68 @@ def chat_msme_stream(req: MsmeChatRequest):
     )
 
 
+def process_msme_extract_background(task_id: str, file_bytes: bytes, filename: str, content_type: str, session_id: str):
+    try:
+        logging.info(f"[MSME Background Task {task_id}] Started for: {filename}")
+        extractor = MsmeExtractor(session_id)
+        result = extractor.extract(file_bytes, filename, content_type)
+        
+        if result["status"] == "error":
+            msme_upload_tasks[task_id] = {"status": "failed", "error": result["message"]}
+        else:
+            msme_upload_tasks[task_id] = {
+                "status": "success",
+                "data": {
+                    "status": result["status"],
+                    "message": result["message"],
+                    "fields_updated": result.get("fields_updated", 0),
+                    "total_filled": result.get("filled_fields", 0),
+                    "total_fields": result.get("total_fields", 0),
+                    "missing_fields_count": result.get("missing_fields_count", 0),
+                    "percent_complete": result.get("percent_complete", 0),
+                    "form_available": result.get("filled_fields", 0) > 0,
+                }
+            }
+        logging.info(f"[MSME Background Task {task_id}] Completed with status: {result['status']}")
+    except Exception as e:
+        logging.error(f"[MSME Background Task {task_id}] Unexpected error: {e}", exc_info=True)
+        msme_upload_tasks[task_id] = {"status": "failed", "error": str(e)}
+
+
 @app.post("/msme/extract")
 async def msme_extract_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session_id: str = Form(...),
 ):
-    """Upload a file (PDF/image/text) for MSME form extraction."""
+    """Upload a file (PDF/image/text) for MSME form extraction asynchronously."""
     try:
         file_bytes = await file.read()
-        extractor = MsmeExtractor(session_id)
-        result = extractor.extract(file_bytes, file.filename, file.content_type)
-
-        return {
-            "status": result["status"],
-            "message": result["message"],
-            "fields_updated": result.get("fields_updated", 0),
-            "total_filled": result.get("filled_fields", 0),
-            "total_fields": result.get("total_fields", 0),
-            "missing_fields_count": result.get("missing_fields_count", 0),
-            "percent_complete": result.get("percent_complete", 0),
-            "form_available": result.get("filled_fields", 0) > 0,
-        }
+        task_id = str(uuid.uuid4())
+        msme_upload_tasks[task_id] = {"status": "processing"}
+        
+        background_tasks.add_task(
+            process_msme_extract_background,
+            task_id,
+            file_bytes,
+            file.filename,
+            file.content_type,
+            session_id
+        )
+        
+        logging.info(f"[MSME Extract] Dispatched task {task_id} for file: {file.filename}")
+        return {"status": "processing", "task_id": task_id}
     except Exception as e:
-        logging.error(f"MSME extract error: {e}", exc_info=True)
+        logging.error(f"[MSME Extract Init] Failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/msme/extract/status/{task_id}")
+def get_msme_extract_status(task_id: str):
+    """Poll the status of an MSME extraction background task."""
+    if task_id not in msme_upload_tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return msme_upload_tasks[task_id]
 
 
 @app.get("/msme/form/{session_id}")
