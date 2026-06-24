@@ -16,6 +16,8 @@ import imageio_ffmpeg
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from msme_extractor import MsmeExtractor
+
 from unified_db import (
     create_user, verify_password, get_user, create_session,
     get_user_sessions, append_message, get_chat_history,
@@ -528,6 +530,140 @@ def debug_ollama():
         }
     except Exception as e:
         return {"error": str(e)}
+
+# ==========================================
+# MSME Extraction Endpoints
+# ==========================================
+
+class MsmeChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    query: str
+    user_id: str = "default_user"
+
+
+@app.post("/chat/msme")
+def chat_msme_stream(req: MsmeChatRequest):
+    """Streaming MSME extraction from text (voice transcript or typed description)."""
+    session_id = req.session_id
+    if not session_id:
+        title = req.query[:30] + "..." if len(req.query) > 30 else req.query
+        session_id = create_session(req.user_id, title)
+
+    append_message(session_id, "user", req.query, "msme", user_id=req.user_id)
+
+    def generate():
+        try:
+            nl = "\n\n"
+            data_init = json.dumps({"token": "\ud83d\udccb Analyzing your input for MSME form fields..."})
+            yield f"data: {data_init}\n\n"
+            data_nl = json.dumps({"token": nl})
+            yield f"data: {data_nl}\n\n"
+
+            extractor = MsmeExtractor(session_id)
+            result = extractor.extract_from_text(req.query)
+
+            if result["status"] == "error":
+                msg = "\u274c Extraction failed: " + result["message"]
+                data_str = json.dumps({'token': msg})
+                yield f"data: {data_str}\n\n"
+            elif result["status"] == "complete":
+                msg = "\u2705 All form fields are already filled! No new extraction needed."
+                data_str = json.dumps({'token': msg})
+                yield f"data: {data_str}\n\n"
+            else:
+                fu = result["fields_updated"]
+                prov = result.get("provider", "LLM")
+                msg1 = f"\u2705 Successfully extracted **{fu}** new fields using {prov}."
+                yield f"data: {json.dumps({'token': msg1})}\n\n"
+
+                ff = result["filled_fields"]
+                tf = result["total_fields"]
+                pc = result["percent_complete"]
+                msg2 = f"{nl}\ud83d\udcca **Progress:** {ff}/{tf} fields filled ({pc}%)"
+                yield f"data: {json.dumps({'token': msg2})}\n\n"
+
+                mfc = result["missing_fields_count"]
+                if mfc > 0:
+                    msg3 = f"{nl}\ud83d\udcc4 {mfc} fields still missing. Upload more documents or describe additional details."
+                    yield f"data: {json.dumps({'token': msg3})}\n\n"
+                else:
+                    msg3 = f"{nl}\ud83c\udf89 **All fields filled!** Your MSME form is ready."
+                    yield f"data: {json.dumps({'token': msg3})}\n\n"
+
+            # Send extraction metadata for frontend to render result cards
+            meta_payload = {"msme_result": result, "form_url": f"/msme/form/{session_id}"}
+            yield f"data: {json.dumps(meta_payload)}\n\n"
+
+            # Save assistant response
+            summary = f"Extracted {result.get('fields_updated', 0)} fields. Progress: {result.get('filled_fields', 0)}/{result.get('total_fields', 0)}"
+            append_message(session_id, "assistant", summary, "msme", user_id=req.user_id)
+
+            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+        except Exception as e:
+            logging.error(f"MSME chat error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/msme/extract")
+async def msme_extract_file(
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
+):
+    """Upload a file (PDF/image/text) for MSME form extraction."""
+    try:
+        file_bytes = await file.read()
+        extractor = MsmeExtractor(session_id)
+        result = extractor.extract(file_bytes, file.filename, file.content_type)
+
+        return {
+            "status": result["status"],
+            "message": result["message"],
+            "fields_updated": result.get("fields_updated", 0),
+            "total_filled": result.get("filled_fields", 0),
+            "total_fields": result.get("total_fields", 0),
+            "missing_fields_count": result.get("missing_fields_count", 0),
+            "percent_complete": result.get("percent_complete", 0),
+            "form_available": result.get("filled_fields", 0) > 0,
+        }
+    except Exception as e:
+        logging.error(f"MSME extract error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/msme/form/{session_id}")
+def get_msme_form(session_id: str):
+    """Get the filled MSME form as rendered markdown."""
+    try:
+        extractor = MsmeExtractor(session_id)
+        markdown = extractor.get_filled_form()
+        progress = extractor.get_progress()
+        return {
+            "session_id": session_id,
+            "markdown": markdown,
+            "progress": progress,
+        }
+    except Exception as e:
+        logging.error(f"MSME form fetch error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/msme/session/{session_id}")
+def reset_msme_session(session_id: str):
+    """Clear/reset extraction state for a session."""
+    try:
+        extractor = MsmeExtractor(session_id)
+        extractor.reset()
+        return {"status": "success", "message": f"MSME session {session_id} reset."}
+    except Exception as e:
+        logging.error(f"MSME session reset error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
