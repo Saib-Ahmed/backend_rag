@@ -161,20 +161,27 @@ class MsmeExtractor:
         return self._fill_template(template, state)
 
     # ------------------------------------------------------------------
-    # LLM extraction — Gemini (primary)
-    # ------------------------------------------------------------------
     @staticmethod
-    def _extract_with_gemini(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
-        """Send document bytes to Gemini API and extract missing fields."""
-        if not _is_valid_key(GEMINI_API_KEY):
-            raise ValueError("GEMINI_API_KEY is not set or is empty in the server environment variables.")
-        logger.info(f"Gemini extraction for {len(missing_keys)} missing fields from '{filename}'...")
-        client = genai.Client(api_key=GEMINI_API_KEY)
-
-        # Resolve extension and mime-type dynamically
+    def _detect_file_info(file_bytes: bytes, filename: str, mime_type: str) -> tuple[str, str]:
+        """Detect the correct mime type and extension from binary headers (magic numbers) of the file."""
+        header = file_bytes[:16]
         resolved_mime = mime_type
-        ext = os.path.splitext(filename)[1].lower()
-        if not resolved_mime or resolved_mime in ("application/octet-stream", "binary/octet-stream"):
+        ext = os.path.splitext(filename)[1].lower() if filename else ""
+        
+        if header.startswith(b"%PDF"):
+            return "application/pdf", ".pdf"
+        elif header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png", ".png"
+        elif header.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg", ".jpeg"
+        elif header.startswith(b"RIFF") and b"WEBP" in header[8:16]:
+            return "image/webp", ".webp"
+        elif header.startswith(b"GIF87a") or header.startswith(b"GIF89a"):
+            return "image/gif", ".gif"
+        elif header.startswith(b"BM"):
+            return "image/bmp", ".bmp"
+            
+        if not resolved_mime or resolved_mime in ("application/octet-stream", "binary/octet-stream", "blob"):
             if ext == ".pdf":
                 resolved_mime = "application/pdf"
             elif ext in (".jpg", ".jpeg"):
@@ -183,11 +190,15 @@ class MsmeExtractor:
                 resolved_mime = "image/png"
             elif ext == ".webp":
                 resolved_mime = "image/webp"
+            elif ext == ".gif":
+                resolved_mime = "image/gif"
+            elif ext == ".bmp":
+                resolved_mime = "image/bmp"
             elif ext == ".txt":
                 resolved_mime = "text/plain"
             elif ext == ".md":
                 resolved_mime = "text/markdown"
-
+                
         if not ext:
             if resolved_mime == "application/pdf":
                 ext = ".pdf"
@@ -197,12 +208,33 @@ class MsmeExtractor:
                 ext = ".png"
             elif resolved_mime == "image/webp":
                 ext = ".webp"
+            elif resolved_mime == "image/gif":
+                ext = ".gif"
+            elif resolved_mime == "image/bmp":
+                ext = ".bmp"
             elif resolved_mime == "text/plain":
                 ext = ".txt"
             elif resolved_mime == "text/markdown":
                 ext = ".md"
             else:
                 ext = ".bin"
+                
+        return resolved_mime, ext
+
+    # ------------------------------------------------------------------
+    # LLM extraction — Gemini (primary)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_with_gemini(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
+        """Send document bytes to Gemini API and extract missing fields."""
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        if not _is_valid_key(gemini_key):
+            raise ValueError("GEMINI_API_KEY is not set or is empty in the server environment variables.")
+        logger.info(f"Gemini extraction for {len(missing_keys)} missing fields from '{filename}'...")
+        client = genai.Client(api_key=gemini_key)
+
+        # Resolve extension and mime-type dynamically using magic bytes
+        resolved_mime, ext = MsmeExtractor._detect_file_info(file_bytes, filename, mime_type)
 
         # Upload the file bytes as a temporary file for the Gemini Files API
         import tempfile
@@ -252,13 +284,14 @@ class MsmeExtractor:
     @staticmethod
     def _extract_with_kimi(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
         """Fallback extraction using Moonshot Kimi-K2.6 via NVIDIA."""
-        if not _is_valid_key(NVIDIA_API_KEY):
+        nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
+        if not _is_valid_key(nvidia_key):
             raise ValueError("NVIDIA_API_KEY is not set or is empty in the server environment variables.")
         logger.info(f"Kimi fallback extraction for {len(missing_keys)} fields from '{filename}'...")
         invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
 
         headers = {
-            "Authorization": f"Bearer {NVIDIA_API_KEY}",
+            "Authorization": f"Bearer {nvidia_key}",
             "Accept": "application/json",
         }
 
@@ -270,10 +303,12 @@ class MsmeExtractor:
         )
 
         content_list = [{"type": "text", "text": prompt_text}]
-        ext = os.path.splitext(filename)[1].lower()
+        
+        # Resolve mime-type and extension dynamically using magic bytes
+        resolved_mime, ext = MsmeExtractor._detect_file_info(file_bytes, filename, mime_type)
 
-        is_text = mime_type in ("text/plain", "text/markdown") or ext in (".md", ".txt")
-        is_image = mime_type.startswith("image/") or ext in (
+        is_text = resolved_mime in ("text/plain", "text/markdown") or ext in (".md", ".txt")
+        is_image = resolved_mime.startswith("image/") or ext in (
             ".png", ".jpg", ".jpeg", ".webp", ".heic", ".gif", ".tiff", ".bmp"
         )
 
@@ -285,7 +320,7 @@ class MsmeExtractor:
         # Images — send as base64
         elif is_image:
             b64_img = base64.b64encode(file_bytes).decode("utf-8")
-            img_mime = mime_type
+            img_mime = resolved_mime
             if not img_mime or not img_mime.startswith("image/"):
                 if ext == ".png":
                     img_mime = "image/png"

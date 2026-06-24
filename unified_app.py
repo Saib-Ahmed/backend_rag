@@ -641,27 +641,109 @@ def process_msme_extract_background(task_id: str, file_bytes: bytes, filename: s
 
 @app.post("/msme/extract")
 async def msme_extract_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session_id: str = Form(...),
 ):
-    """Upload a file (PDF/image/text) for MSME form extraction asynchronously."""
+    """Upload a file (PDF/image/text) for MSME form extraction with active heartbeat streaming."""
     try:
+        import time
+        import threading
+        import queue
+
         file_bytes = await file.read()
+        filename = file.filename
+        content_type = file.content_type
+
+        # Global task registry update (for backwards compatibility if any client polls it)
         task_id = str(uuid.uuid4())
         msme_upload_tasks[task_id] = {"status": "processing"}
-        
-        background_tasks.add_task(
-            process_msme_extract_background,
-            task_id,
-            file_bytes,
-            file.filename,
-            file.content_type,
-            session_id
+
+        q = queue.Queue()
+
+        def run_extraction():
+            try:
+                logging.info(f"[MSME Sync Stream] Starting extraction for: {filename}")
+                extractor = MsmeExtractor(session_id)
+                res = extractor.extract(file_bytes, filename, content_type)
+                
+                # Format the response exactly as expected by the frontend
+                if res["status"] == "error":
+                    final_res = {
+                        "status": "error",
+                        "message": res["message"],
+                        "fields_updated": 0,
+                        "total_filled": res.get("filled_fields", 0),
+                        "total_fields": res.get("total_fields", 0),
+                        "missing_fields_count": res.get("missing_fields_count", 0),
+                        "percent_complete": res.get("percent_complete", 0),
+                        "form_available": res.get("filled_fields", 0) > 0,
+                    }
+                    msme_upload_tasks[task_id] = {"status": "failed", "error": res["message"]}
+                else:
+                    final_res = {
+                        "status": res["status"],
+                        "message": res["message"],
+                        "fields_updated": res.get("fields_updated", 0),
+                        "total_filled": res.get("filled_fields", 0),
+                        "total_fields": res.get("total_fields", 0),
+                        "missing_fields_count": res.get("missing_fields_count", 0),
+                        "percent_complete": res.get("percent_complete", 0),
+                        "form_available": res.get("filled_fields", 0) > 0,
+                    }
+                    msme_upload_tasks[task_id] = {"status": "success", "data": final_res}
+                
+                q.put(("success", final_res))
+            except Exception as e:
+                logging.error(f"[MSME Sync Stream] Extraction thread exception: {e}", exc_info=True)
+                error_res = {
+                    "status": "error",
+                    "message": str(e),
+                    "fields_updated": 0,
+                    "total_filled": 0,
+                    "total_fields": 0,
+                    "missing_fields_count": 0,
+                    "percent_complete": 0,
+                    "form_available": False,
+                }
+                msme_upload_tasks[task_id] = {"status": "failed", "error": str(e)}
+                q.put(("error", error_res))
+
+        t = threading.Thread(target=run_extraction)
+        t.start()
+
+        def generate():
+            # Yield spaces/newlines to keep connection active and prevent RunPod from freezing container
+            while t.is_alive():
+                yield " "
+                time.sleep(1.5)
+
+            t.join()
+
+            try:
+                status, val = q.get_nowait()
+                yield json.dumps(val)
+            except Exception as e:
+                yield json.dumps({
+                    "status": "error",
+                    "message": f"Failed to retrieve extraction result: {str(e)}",
+                    "fields_updated": 0,
+                    "total_filled": 0,
+                    "total_fields": 0,
+                    "missing_fields_count": 0,
+                    "percent_complete": 0,
+                    "form_available": False,
+                })
+
+        return StreamingResponse(
+            generate(),
+            media_type="application/json",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive"
+            }
         )
-        
-        logging.info(f"[MSME Extract] Dispatched task {task_id} for file: {file.filename}")
-        return {"status": "processing", "task_id": task_id}
+
     except Exception as e:
         logging.error(f"[MSME Extract Init] Failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
