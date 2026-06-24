@@ -157,6 +157,8 @@ class MsmeExtractor:
     @staticmethod
     def _extract_with_gemini(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
         """Send document bytes to Gemini API and extract missing fields."""
+        if not GEMINI_API_KEY or not GEMINI_API_KEY.strip() or "placeholder" in GEMINI_API_KEY.lower():
+            raise ValueError("GEMINI_API_KEY is not set or is empty in the server environment variables.")
         logger.info(f"Gemini extraction for {len(missing_keys)} missing fields from '{filename}'...")
         client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -222,6 +224,8 @@ class MsmeExtractor:
     @staticmethod
     def _extract_with_kimi(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
         """Fallback extraction using Moonshot Kimi-K2.6 via NVIDIA."""
+        if not NVIDIA_API_KEY or not NVIDIA_API_KEY.strip() or "placeholder" in NVIDIA_API_KEY.lower():
+            raise ValueError("NVIDIA_API_KEY is not set or is empty in the server environment variables.")
         logger.info(f"Kimi fallback extraction for {len(missing_keys)} fields from '{filename}'...")
         invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
 
@@ -280,7 +284,28 @@ class MsmeExtractor:
         response = requests.post(invoke_url, headers=headers, json=payload)
         response.raise_for_status()
         result = response.json()
-        return json.loads(result["choices"][0]["message"]["content"])
+        content = result["choices"][0]["message"]["content"]
+        
+        # Parse output JSON robustly
+        try:
+            return json.loads(content.strip())
+        except Exception:
+            # Fallback to extracting JSON block between markdown tags or curly braces
+            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL | re.IGNORECASE)
+            if match:
+                try:
+                    return json.loads(match.group(1).strip())
+                except Exception:
+                    pass
+            # Try finding the first '{' and last '}'
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(content[start:end+1].strip())
+                except Exception:
+                    pass
+            raise ValueError(f"Kimi returned text that could not be parsed as JSON: {content[:500]}...")
 
     # ------------------------------------------------------------------
     # Main extraction pipeline
