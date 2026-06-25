@@ -129,7 +129,7 @@ def get_combined_stats():
         "v2": {"status": "offline", "num_chunks": 0, "graph": {"entities": 0, "relationships": 0}}
     }
     try:
-        res = requests.get("http://127.0.0.1:8002/api/stats", timeout=5)
+        res = requests.get("http://127.0.0.1:8002/api/stats", timeout=15)
         if res.status_code == 200:
             stats["v1"] = res.json()
     except Exception as e:
@@ -137,7 +137,7 @@ def get_combined_stats():
         pass
     
     try:
-        res = requests.get("http://127.0.0.1:8003/api/stats", timeout=5)
+        res = requests.get("http://127.0.0.1:8003/api/stats", timeout=15)
         if res.status_code == 200:
             stats["v2"] = res.json()
     except Exception as e:
@@ -298,7 +298,7 @@ def search_documents_route(q: str = Query(..., min_length=1), rag_version: str =
         else:
             target_url = "http://127.0.0.1:8003/api/documents/search"
             
-        res = requests.get(target_url, params={"q": q}, timeout=30)
+        res = requests.get(target_url, params={"q": q}, timeout=90)
         
         if res.status_code == 200:
             return res.json()
@@ -321,7 +321,7 @@ def get_document_content_route(file_name: str, rag_version: str = Query("version
         else:
             target_url = f"http://127.0.0.1:8003/api/documents/{encoded_name}/content"
             
-        res = requests.get(target_url, timeout=30)
+        res = requests.get(target_url, timeout=90)
         
         if res.status_code == 200:
             return res.json()
@@ -371,7 +371,7 @@ def delete_document_route(file_name: str, rag_version: str = Query("version1")):
         else:
             target_url = f"http://127.0.0.1:8003/documents/{encoded_name}"
             
-        res = requests.delete(target_url, timeout=30)
+        res = requests.delete(target_url, timeout=90)
         
         if res.status_code == 200:
             return res.json()
@@ -388,7 +388,7 @@ def clear_all_documents_route(rag_version: str = Query("version1")):
         else:
             target_url = "http://127.0.0.1:8003/api/documents"
             
-        res = requests.delete(target_url, timeout=60)
+        res = requests.delete(target_url, timeout=120)
         
         if res.status_code == 200:
             return res.json()
@@ -458,7 +458,7 @@ def get_query_trace_route(rag_version: str = Query("version1")):
     try:
         if rag_version == "version1":
             target_url = "http://127.0.0.1:8002/api/query_trace"
-            res = requests.get(target_url, timeout=30)
+            res = requests.get(target_url, timeout=90)
             if res.status_code == 200:
                 return res.json()
             else:
