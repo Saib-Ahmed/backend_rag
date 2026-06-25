@@ -693,6 +693,36 @@ def get_document_content(file_name: str) -> Dict[str, Any]:
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
     filepath = os.path.join(config.RAG_TMP_DIR, f"{safe_name}_extraction.md")
     if not os.path.exists(filepath):
+        # Fallback: Reconstruct from Qdrant chunks
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            engine = get_engine()
+            points, _ = engine.db.client.scroll(
+                collection_name=engine.db.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="source_file",
+                            match=MatchValue(value=file_name),
+                        )
+                    ]
+                ),
+                limit=10000,
+                with_payload=["chunk_index", "text"],
+                with_vectors=False,
+            )
+            if points:
+                sorted_points = sorted(points, key=lambda p: p.payload.get("chunk_index", 0))
+                reconstructed_content = "\n\n".join([p.payload.get("text", "") for p in sorted_points])
+                try:
+                    os.makedirs(config.RAG_TMP_DIR, exist_ok=True)
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        f.write(reconstructed_content)
+                except Exception as save_err:
+                    logger.warning(f"Failed to save reconstructed markdown cache in v1: {save_err}")
+                return {"file_name": file_name, "content": reconstructed_content}
+        except Exception as e:
+            logger.error(f"Failed to reconstruct document from Qdrant in v1: {e}")
         raise HTTPException(status_code=404, detail="Content not found")
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
@@ -764,6 +794,18 @@ def delete_document(file_name: str) -> Dict[str, Any]:
         engine.db.delete_document(file_name)
         if engine.graph_rag.available:
             engine.graph_rag.delete_document(file_name)
+
+        # Delete intermediate extraction and chunk md files
+        try:
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
+            for suffix in ["_extraction.md", "_chunks.md"]:
+                old_path = os.path.join(config.RAG_TMP_DIR, f"{safe_name}{suffix}")
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+                    logger.info(f"Deleted tmp file: {old_path}")
+        except Exception as file_err:
+            logger.error(f"Failed to delete tmp files for {file_name}: {file_err}")
+
         return {"status": "success", "message": f"Deleted {file_name}"}
     except Exception as e:
         logger.error(f"Error deleting document {file_name}: {e}")
@@ -778,6 +820,18 @@ def clear_all_documents() -> Dict[str, Any]:
         engine.db.setup_database()
         if engine.graph_rag.available:
             engine.graph_rag.clear_all_documents()
+
+        # Clear all intermediate md files in the tmp directory
+        try:
+            for f in os.listdir(config.RAG_TMP_DIR):
+                if f.endswith(".md"):
+                    try:
+                        os.remove(os.path.join(config.RAG_TMP_DIR, f))
+                    except Exception as file_err:
+                        logger.error(f"Failed to delete {f}: {file_err}")
+        except Exception as dir_err:
+            logger.error(f"Failed to clear RAG_TMP_DIR: {dir_err}")
+
         return {"status": "success", "message": "All documents cleared"}
     except Exception as e:
         logger.error(f"Error clearing all documents: {e}")

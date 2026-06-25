@@ -111,10 +111,16 @@ class MsmeExtractor:
     # State management
     # ------------------------------------------------------------------
     def _load_state(self) -> dict:
+        state = {key: "" for key in TARGET_KEYS}
         if os.path.exists(self.state_file):
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return {key: "" for key in TARGET_KEYS}
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    loaded_data = json.load(f)
+                    if isinstance(loaded_data, dict):
+                        state.update(loaded_data)
+            except Exception as e:
+                logger.error(f"Failed to load state file '{self.state_file}' due to error: {e}. Reinitializing state.")
+        return state
 
     def _save_state(self, state: dict) -> None:
         with open(self.state_file, "w", encoding="utf-8") as f:
@@ -432,10 +438,15 @@ class MsmeExtractor:
         fields_updated = 0
         if new_data:
             for key in missing_keys:
-                extracted_value = str(new_data.get(key, "")).strip()
-                if extracted_value:
-                    current_state[key] = extracted_value
-                    fields_updated += 1
+                raw_value = new_data.get(key, "")
+                if raw_value is None:
+                    continue
+                extracted_value = str(raw_value).strip()
+                # Treat common null/empty string placeholders as empty
+                if extracted_value.lower() in ("none", "n/a", "null", "not available", "not_available", "not applicable", ""):
+                    continue
+                current_state[key] = extracted_value
+                fields_updated += 1
             self._save_state(current_state)
 
         progress = self.get_progress()

@@ -337,6 +337,16 @@ def delete_document_endpoint(file_name: str):
                 "'%s' not found in Database — Qdrant only.", file_name
             )
 
+        # Delete intermediate .md file
+        try:
+            stem = Path(file_name).stem
+            md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
+            if md_path.exists():
+                md_path.unlink()
+                logger.info("Deleted intermediate md file: %s", md_path)
+        except Exception as file_err:
+            logger.error("Failed to delete intermediate md file for %s: %s", file_name, file_err)
+
         return {
             "status":           "success",
             "message":          f"'{file_name}' purged from pipeline.",
@@ -374,6 +384,16 @@ def clear_all_documents_endpoint():
     except Exception as e:
         logger.error("Failed to truncate Database documents: %s", e)
         postgres_cleared = False
+
+    try:
+        # 3. Clear all intermediate .md files from cache folder
+        for md_file in config.MD_OUTPUT_DIR.glob("*.md"):
+            try:
+                md_file.unlink()
+            except Exception as file_err:
+                logger.error("Failed to delete md file %s: %s", md_file, file_err)
+    except Exception as e:
+        logger.error("Failed to clear md_output folder: %s", e)
 
     return {
         "status": "success",
@@ -469,6 +489,34 @@ def get_document_content(file_name: str):
     stem = Path(file_name).stem
     md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
     if not md_path.exists():
+        # Fallback: Reconstruct from Qdrant chunks
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            points, _ = db.client.scroll(
+                collection_name=db.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="source_file",
+                            match=MatchValue(value=file_name),
+                        )
+                    ]
+                ),
+                limit=10000,
+                with_payload=["chunk_index", "text"],
+                with_vectors=False,
+            )
+            if points:
+                sorted_points = sorted(points, key=lambda p: p.payload.get("chunk_index", 0))
+                reconstructed_content = "\n\n".join([p.payload.get("text", "") for p in sorted_points])
+                try:
+                    config.MD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                    md_path.write_text(reconstructed_content, encoding="utf-8")
+                except Exception as save_err:
+                    logger.warning("Failed to save reconstructed markdown cache: %s", save_err)
+                return {"file_name": file_name, "content": reconstructed_content}
+        except Exception as e:
+            logger.error("Failed to reconstruct document from Qdrant: %s", e)
         raise HTTPException(status_code=404, detail="Content not found")
     content = md_path.read_text(encoding="utf-8")
     return {"file_name": file_name, "content": content}
