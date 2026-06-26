@@ -23,6 +23,7 @@ from unified_db import (
     get_user_sessions, append_message, get_chat_history,
     get_chat_history_formatted_for_llm, update_session_title, delete_session,
     save_document_metadata, get_all_document_metadata, delete_document_metadata,
+    update_document_metadata,
 )
 
 app = FastAPI(title="Unified RAG API")
@@ -100,14 +101,21 @@ def register(req: RegisterRequest):
     user_id = create_user(req.username, req.email, req.password)
     if not user_id:
         raise HTTPException(status_code=400, detail="Username or Email already exists")
-    return {"user_id": user_id, "username": req.username}
+    role = "admin" if req.email == "saib@gmail.com" else "user"
+    return {"user_id": user_id, "username": req.username, "email": req.email, "role": role}
 
 @app.post("/auth/login")
 def login(req: AuthRequest):
     user = get_user(req.username)
     if not user or not verify_password(req.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    return {"user_id": user["user_id"], "username": user["username"]}
+    role = "admin" if (user.get("email") == "saib@gmail.com" or user.get("username") == "saib@gmail.com" or user.get("role") == "admin") else "user"
+    return {
+        "user_id": user["user_id"],
+        "username": user["username"],
+        "email": user.get("email"),
+        "role": role
+    }
 
 @app.get("/sessions")
 def get_sessions(user_id: str = "default_user"):
@@ -221,6 +229,47 @@ def chat_stream(req: ChatRequest):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
 
+def backup_markdown_file(filename: str, rag_version: str):
+    try:
+        import shutil
+        from pathlib import Path
+        stem = Path(filename).stem
+        md_source = None
+
+        if rag_version in ["version2", "v2"]:
+            env_dir = os.environ.get("MD_OUTPUT_DIR")
+            if env_dir and os.path.exists(os.path.join(env_dir, f"{stem}.md")):
+                md_source = os.path.join(env_dir, f"{stem}.md")
+            else:
+                candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "final_rag", "md_output", f"{stem}.md")
+                if os.path.exists(candidate):
+                    md_source = candidate
+        else:
+            import re
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename)
+            env_dir = os.environ.get("RAG_TMP_DIR")
+            if env_dir and os.path.exists(os.path.join(env_dir, f"{safe_name}_extraction.md")):
+                md_source = os.path.join(env_dir, f"{safe_name}_extraction.md")
+            else:
+                candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "RAG_system", "tmp", f"{safe_name}_extraction.md")
+                if os.path.exists(candidate):
+                    md_source = candidate
+
+        if md_source:
+            v_suffix = "_v2" if rag_version in ["version2", "v2"] else "_v1"
+            backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}{v_suffix}.md")
+            # If file already exists in backup, add timestamp suffix to keep both
+            if os.path.exists(backup_dest):
+                from datetime import datetime
+                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+                backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}{v_suffix}_{ts}.md")
+            shutil.copy2(md_source, backup_dest)
+            logging.info(f"Backed up md to: {backup_dest}")
+        else:
+            logging.warning(f"No .md source file found for backup of {filename}")
+    except Exception as backup_err:
+        logging.error(f"Failed to create backup for {filename}: {backup_err}")
+
 def process_upload_background(task_id: str, filename: str, file_content: bytes, content_type: str, buildGraph: bool, rag_version: str,
                                doc_type: str = "PDF", source: str = "public", source_description: str = "", creation_date: str = ""):
     try:
@@ -261,44 +310,7 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                     logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")
 
                 # ── Copy .md to backup_markdown/ (immutable archive) ──
-                try:
-                    import shutil
-                    from pathlib import Path
-                    stem = Path(filename).stem
-                    md_source = None
-
-                    if rag_version in ["version2", "v2"]:
-                        env_dir = os.environ.get("MD_OUTPUT_DIR")
-                        if env_dir and os.path.exists(os.path.join(env_dir, f"{stem}.md")):
-                            md_source = os.path.join(env_dir, f"{stem}.md")
-                        else:
-                            candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "final_rag", "md_output", f"{stem}.md")
-                            if os.path.exists(candidate):
-                                md_source = candidate
-                    else:
-                        import re
-                        safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename)
-                        env_dir = os.environ.get("RAG_TMP_DIR")
-                        if env_dir and os.path.exists(os.path.join(env_dir, f"{safe_name}_extraction.md")):
-                            md_source = os.path.join(env_dir, f"{safe_name}_extraction.md")
-                        else:
-                            candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "RAG_system", "tmp", f"{safe_name}_extraction.md")
-                            if os.path.exists(candidate):
-                                md_source = candidate
-
-                    if md_source:
-                        backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}.md")
-                        # If file already exists in backup, add timestamp suffix to keep both
-                        if os.path.exists(backup_dest):
-                            from datetime import datetime
-                            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-                            backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}_{ts}.md")
-                        shutil.copy2(md_source, backup_dest)
-                        logging.info(f"[Background Task {task_id}] Backed up md to: {backup_dest}")
-                    else:
-                        logging.warning(f"[Background Task {task_id}] No .md source file found for backup")
-                except Exception as backup_err:
-                    logging.error(f"[Background Task {task_id}] Failed to create backup: {backup_err}")
+                backup_markdown_file(filename, rag_version)
         else:
             logging.error(f"[Background Task {task_id}] Downstream error: status={res.status_code} body={res.text[:500]}")
             upload_tasks[task_id] = {"status": "failed", "error": f"Backend returned {res.status_code}: {res.text}"}
@@ -470,6 +482,33 @@ def get_documents_metadata_route():
         logging.error(f"Failed to get document metadata: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class UpdateDocumentMetadataRequest(BaseModel):
+    doc_type: Optional[str] = None
+    source: Optional[str] = None
+    source_description: Optional[str] = None
+    creation_date: Optional[str] = None
+    ingestion_date: Optional[str] = None
+    rag_version: Optional[str] = None
+
+
+@app.put("/documents/{file_name}/metadata")
+def update_document_metadata_route(file_name: str, req: UpdateDocumentMetadataRequest):
+    try:
+        success = update_document_metadata(
+            file_name=file_name,
+            doc_type=req.doc_type,
+            source=req.source,
+            source_description=req.source_description,
+            creation_date=req.creation_date,
+            ingestion_date=req.ingestion_date,
+            rag_version=req.rag_version,
+        )
+        return {"status": "success" if success else "no_change"}
+    except Exception as e:
+        logging.error(f"Failed to update metadata for '{file_name}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/documents")
 def clear_all_documents_route(rag_version: str = Query("version1")):
     try:
@@ -533,6 +572,33 @@ async def replace_document_route(
         res = requests.post(target_url, files=files_payload, data=data_payload, timeout=900)
 
         if res.status_code == 200:
+            # ── Update MongoDB Metadata & Create Backup ──
+            try:
+                from unified_db import get_document_metadata, delete_document_metadata, save_document_metadata
+                
+                old_meta = get_document_metadata(old_file_name) or {}
+                doc_type = old_meta.get("doc_type", "PDF" if file.filename.lower().endswith(".pdf") else "Text")
+                source = old_meta.get("source", "public")
+                source_description = old_meta.get("source_description", "")
+                creation_date = old_meta.get("creation_date", "")
+                
+                if old_file_name != file.filename:
+                    delete_document_metadata(old_file_name)
+                    
+                save_document_metadata(
+                    file_name=file.filename,
+                    doc_type=doc_type,
+                    source=source,
+                    source_description=source_description,
+                    creation_date=creation_date,
+                    rag_version=rag_version
+                )
+                
+                # Backup the new replaced file markdown
+                backup_markdown_file(file.filename, rag_version)
+            except Exception as meta_err:
+                logging.error(f"Failed to update metadata/backup during file replacement: {meta_err}")
+                
             return res.json()
         else:
             raise HTTPException(status_code=res.status_code, detail=res.text)
