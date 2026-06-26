@@ -592,9 +592,9 @@ async def preview_parse_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="Could not read file.")
 
     try:
-        # Use a parser with output_dir=None so _save() is a no-op
+        # Use a parser with output_dir=None so _save() is a noop
         preview_parser = DocumentParser(output_dir=None)
-        parsed_result = preview_parser.parse_bytes(file_bytes, file.filename)
+        parsed_result = preview_parser.parse_bytes(file_bytes, file.filename, generate_metadata=False)
         if not parsed_result.success:
             raise Exception(f"Parsing failed: {parsed_result.error}")
 

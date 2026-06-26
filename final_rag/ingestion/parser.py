@@ -604,7 +604,7 @@ class DocumentParser:
         logger.info("DocumentParser initialized | output_dir=%s", self.output_dir)
 
     # ── Public: parse bytes ────────────────────────────────────────────
-    def parse_bytes(self, file_bytes: bytes, file_name: str) -> ParseResult:
+    def parse_bytes(self, file_bytes: bytes, file_name: str, generate_metadata: bool = True) -> ParseResult:
         suffix       = Path(file_name).suffix.lower()
         file_size_mb = len(file_bytes) / (1024 * 1024)
 
@@ -617,7 +617,7 @@ class DocumentParser:
             tmp.write(file_bytes)
             tmp_path = Path(tmp.name)
         try:
-            return self.parse_file(tmp_path, original_file_name=file_name)
+            return self.parse_file(tmp_path, original_file_name=file_name, generate_metadata=generate_metadata)
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -626,6 +626,7 @@ class DocumentParser:
         self,
         file_path:          str | Path,
         original_file_name: str = None,
+        generate_metadata:  bool = True,
     ) -> ParseResult:
         file_path = Path(file_path)
         start     = time.perf_counter()
@@ -698,7 +699,10 @@ class DocumentParser:
         doc_year = doc_meta.get("year", "")
         has_tables = any(b.is_table for b in blocks)
 
-        summary, keywords = _run_async_safe(_generate_metadata_parallel(raw_markdown))
+        if generate_metadata:
+            summary, keywords = _run_async_safe(_generate_metadata_parallel(raw_markdown))
+        else:
+            summary, keywords = "", []
 
         meta = DocumentMeta(
             doc_id          = doc_id,

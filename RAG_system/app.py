@@ -849,7 +849,7 @@ async def preview_parse_document(file: UploadFile = File(...)) -> Dict[str, Any]
 
     try:
         adapter = _UploadedFileAdapter(file.filename, file_bytes)
-        parse_res = engine.parser.parse_bytes(adapter.getvalue(), file.filename)
+        parse_res = engine.parser.parse_bytes(adapter.getvalue(), file.filename, generate_metadata=False)
         if not parse_res.success:
             raise Exception(f"Parsing failed: {parse_res.error}")
 
