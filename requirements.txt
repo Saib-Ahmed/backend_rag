@@ -33,3 +33,4 @@ torchvision
 transformers>=4.40.0
 uvicorn>=0.29.0
 google-genai
+tabulate

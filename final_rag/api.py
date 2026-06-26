@@ -713,10 +713,33 @@ def get_stats():
         logger.error("Failed to get Qdrant files: %s", e)
         pass
 
+    # 3. Build files_meta with real upload_time from MongoDB
+    files_meta = {}
+    try:
+        db_docs = list_documents()
+        db_docs_map = {doc["file_name"]: doc for doc in db_docs}
+        for fname in files:
+            if fname in db_docs_map and db_docs_map[fname].get("upload_time"):
+                files_meta[fname] = {"upload_time": db_docs_map[fname]["upload_time"]}
+            else:
+                # Fallback: check md file mtime on disk
+                try:
+                    stem = Path(fname).stem
+                    md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
+                    if md_path.exists():
+                        import datetime
+                        mtime = md_path.stat().st_mtime
+                        files_meta[fname] = {"upload_time": datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()}
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error("Failed to build files_meta: %s", e)
+
     return {
         "status": "online",
         "num_chunks": num_chunks,
         "files": list(files),
+        "files_meta": files_meta,
         "graph": {"connected": False, "entities": 0, "relationships": 0}
     }
 

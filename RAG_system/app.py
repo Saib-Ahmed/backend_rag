@@ -947,8 +947,21 @@ def get_stats() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error fetching Qdrant files: {e}")
         pass
+
+    # 3. Build files_meta with real mtime from extraction md files
+    files_meta = {}
+    for fname in files:
+        try:
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', fname)
+            filepath = os.path.join(config.RAG_TMP_DIR, f"{safe_name}_extraction.md")
+            if os.path.exists(filepath):
+                from datetime import datetime, timezone
+                mtime = os.path.getmtime(filepath)
+                files_meta[fname] = {"upload_time": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()}
+        except Exception as e:
+            logger.error(f"Error getting mtime for {fname}: {e}")
         
-    # 3. Neo4j Status & Stats
+    # 4. Neo4j Status & Stats
     graph_stats = {"connected": False, "entities": 0, "relationships": 0}
     if engine.graph_rag.enabled and engine.graph_rag.driver:
         try:
@@ -966,6 +979,7 @@ def get_stats() -> Dict[str, Any]:
         "status": "online",
         "num_chunks": num_chunks,
         "files": list(files),
+        "files_meta": files_meta,
         "graph": graph_stats
     }
 

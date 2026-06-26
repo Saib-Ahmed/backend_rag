@@ -21,7 +21,8 @@ from msme_extractor import MsmeExtractor
 from unified_db import (
     create_user, verify_password, get_user, create_session,
     get_user_sessions, append_message, get_chat_history,
-    get_chat_history_formatted_for_llm, update_session_title, delete_session
+    get_chat_history_formatted_for_llm, update_session_title, delete_session,
+    save_document_metadata, get_all_document_metadata, delete_document_metadata,
 )
 
 app = FastAPI(title="Unified RAG API")
@@ -61,6 +62,16 @@ _configure_access_log_filters()
 # Format: { "task_id": {"status": "processing" | "success" | "failed" | "already_exists", "data": {...}, "error": "..."} }
 upload_tasks = {}
 msme_upload_tasks = {}
+
+# Ensure backup_markdown directory exists (immutable archive)
+# If running on RunPod serverless, store inside the persistent network volume at /runpod-volume
+RUNPOD_VOLUME = "/runpod-volume"
+if os.path.exists(RUNPOD_VOLUME) and os.access(RUNPOD_VOLUME, os.W_OK):
+    BACKUP_MD_DIR = os.path.join(RUNPOD_VOLUME, "backup_markdown")
+else:
+    BACKUP_MD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_markdown")
+os.makedirs(BACKUP_MD_DIR, exist_ok=True)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -210,7 +221,8 @@ def chat_stream(req: ChatRequest):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
 
-def process_upload_background(task_id: str, filename: str, file_content: bytes, content_type: str, buildGraph: bool, rag_version: str):
+def process_upload_background(task_id: str, filename: str, file_content: bytes, content_type: str, buildGraph: bool, rag_version: str,
+                               doc_type: str = "PDF", source: str = "public", source_description: str = "", creation_date: str = ""):
     try:
         logging.info(f"[Background Task {task_id}] Started for file: {filename}")
         if rag_version in ["version2", "v2"]:
@@ -234,6 +246,59 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                 upload_tasks[task_id] = {"status": "already_exists", "data": data}
             else:
                 upload_tasks[task_id] = {"status": "success", "data": data}
+
+                # ── Save metadata to MongoDB ──
+                try:
+                    save_document_metadata(
+                        file_name=filename,
+                        doc_type=doc_type,
+                        source=source,
+                        source_description=source_description,
+                        creation_date=creation_date,
+                        rag_version=rag_version,
+                    )
+                except Exception as meta_err:
+                    logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")
+
+                # ── Copy .md to backup_markdown/ (immutable archive) ──
+                try:
+                    import shutil
+                    from pathlib import Path
+                    stem = Path(filename).stem
+                    md_source = None
+
+                    if rag_version in ["version2", "v2"]:
+                        env_dir = os.environ.get("MD_OUTPUT_DIR")
+                        if env_dir and os.path.exists(os.path.join(env_dir, f"{stem}.md")):
+                            md_source = os.path.join(env_dir, f"{stem}.md")
+                        else:
+                            candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "final_rag", "md_output", f"{stem}.md")
+                            if os.path.exists(candidate):
+                                md_source = candidate
+                    else:
+                        import re
+                        safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename)
+                        env_dir = os.environ.get("RAG_TMP_DIR")
+                        if env_dir and os.path.exists(os.path.join(env_dir, f"{safe_name}_extraction.md")):
+                            md_source = os.path.join(env_dir, f"{safe_name}_extraction.md")
+                        else:
+                            candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "RAG_system", "tmp", f"{safe_name}_extraction.md")
+                            if os.path.exists(candidate):
+                                md_source = candidate
+
+                    if md_source:
+                        backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}.md")
+                        # If file already exists in backup, add timestamp suffix to keep both
+                        if os.path.exists(backup_dest):
+                            from datetime import datetime
+                            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+                            backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}_{ts}.md")
+                        shutil.copy2(md_source, backup_dest)
+                        logging.info(f"[Background Task {task_id}] Backed up md to: {backup_dest}")
+                    else:
+                        logging.warning(f"[Background Task {task_id}] No .md source file found for backup")
+                except Exception as backup_err:
+                    logging.error(f"[Background Task {task_id}] Failed to create backup: {backup_err}")
         else:
             logging.error(f"[Background Task {task_id}] Downstream error: status={res.status_code} body={res.text[:500]}")
             upload_tasks[task_id] = {"status": "failed", "error": f"Backend returned {res.status_code}: {res.text}"}
@@ -253,7 +318,11 @@ def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     buildGraph: bool = Form(False),
-    rag_version: str = Form("v1")
+    rag_version: str = Form("v1"),
+    doc_type: str = Form("PDF"),
+    source: str = Form("public"),
+    source_description: str = Form(""),
+    creation_date: str = Form(""),
 ):
     try:
         # Read the file content synchronously before returning the response so it's available in the background
@@ -271,7 +340,11 @@ def upload_file(
             file_content, 
             file.content_type, 
             buildGraph, 
-            rag_version
+            rag_version,
+            doc_type,
+            source,
+            source_description,
+            creation_date,
         )
         
         logging.info(f"[Upload] Dispatched background task {task_id} for file: {file.filename}")
@@ -373,11 +446,28 @@ def delete_document_route(file_name: str, rag_version: str = Query("version1")):
             
         res = requests.delete(target_url, timeout=90)
         
+        # Also delete metadata from MongoDB (but NOT from backup_markdown)
+        try:
+            delete_document_metadata(file_name)
+        except Exception as meta_err:
+            logging.error(f"Failed to delete metadata for '{file_name}': {meta_err}")
+        
         if res.status_code == 200:
             return res.json()
         else:
             raise HTTPException(status_code=res.status_code, detail=res.text)
+    except HTTPException:
+        raise
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/metadata")
+def get_documents_metadata_route():
+    """Return metadata for all ingested documents."""
+    try:
+        return get_all_document_metadata()
+    except Exception as e:
+        logging.error(f"Failed to get document metadata: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/documents")

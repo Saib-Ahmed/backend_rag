@@ -33,6 +33,7 @@ def init_db():
             db.sessions.create_index("session_id", unique=True)
             db.sessions.create_index("user_id")
             db.history.create_index("session_id")
+            db.document_metadata.create_index("file_name", unique=True)
         except Exception as e:
             logger.error(f"Error creating indexes: {e}")
 
@@ -156,3 +157,60 @@ def get_chat_history_formatted_for_llm(session_id: str, limit: int = 6) -> List[
             "content": d["content"]
         })
     return formatted
+
+# --- DOCUMENT METADATA MANAGEMENT ---
+def save_document_metadata(
+    file_name: str,
+    doc_type: str = "PDF",
+    source: str = "public",
+    source_description: str = "",
+    creation_date: str = "",
+    rag_version: str = "version1",
+):
+    """Save or update document metadata in MongoDB."""
+    if db is None:
+        return
+    doc = {
+        "file_name": file_name,
+        "doc_type": doc_type,
+        "source": source,
+        "source_description": source_description,
+        "creation_date": creation_date,
+        "ingestion_date": datetime.utcnow(),
+        "rag_version": rag_version,
+    }
+    db.document_metadata.update_one(
+        {"file_name": file_name},
+        {"$set": doc},
+        upsert=True,
+    )
+    logger.info(f"Saved metadata for '{file_name}'")
+
+
+def get_document_metadata(file_name: str) -> Optional[Dict[str, Any]]:
+    """Return metadata for a single document."""
+    if db is None:
+        return None
+    doc = db.document_metadata.find_one({"file_name": file_name}, {"_id": 0})
+    if doc and isinstance(doc.get("ingestion_date"), datetime):
+        doc["ingestion_date"] = doc["ingestion_date"].isoformat()
+    return doc
+
+
+def get_all_document_metadata() -> List[Dict[str, Any]]:
+    """Return metadata for all documents."""
+    if db is None:
+        return []
+    docs = list(db.document_metadata.find({}, {"_id": 0}).sort("ingestion_date", -1))
+    for doc in docs:
+        if isinstance(doc.get("ingestion_date"), datetime):
+            doc["ingestion_date"] = doc["ingestion_date"].isoformat()
+    return docs
+
+
+def delete_document_metadata(file_name: str) -> bool:
+    """Delete metadata for a document. Returns True if a record was deleted."""
+    if db is None:
+        return False
+    res = db.document_metadata.delete_one({"file_name": file_name})
+    return res.deleted_count > 0
