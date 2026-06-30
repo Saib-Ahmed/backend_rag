@@ -117,8 +117,8 @@ for i in 1 2 3; do
         echo "       WARNING: CUDA/GPU not detected. Waiting 20 seconds before the second attempt..."
         sleep 20
     elif [ $i -eq 2 ]; then
-        echo "       WARNING: CUDA/GPU not detected. Waiting 35 seconds before the third attempt..."
-        sleep 35
+        echo "       WARNING: CUDA/GPU not detected. Waiting 4 minutes before the third attempt..."
+        sleep 240
     fi
 done
 
