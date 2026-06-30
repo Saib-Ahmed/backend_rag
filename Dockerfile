@@ -49,6 +49,7 @@ RUN pip install --no-cache-dir uv && \
     uv pip install --system --no-cache \
         --index-url https://download.pytorch.org/whl/cu124 \
         --extra-index-url https://pypi.org/simple \
+        --index-strategy unsafe-best-match \
         -r requirements.txt && \
     find /usr/local/lib/python3.11 -name "*.pyc" -delete && \
     find /usr/local/lib/python3.11 -type d -name "tests" -exec rm -rf {} +
