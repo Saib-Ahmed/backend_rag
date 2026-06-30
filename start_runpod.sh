@@ -88,6 +88,26 @@ heal_dir "$TRANSFORMER_MODEL_PATH" "/app/final_rag/ingestion/Table_Trans_Model" 
 heal_dir "$TRANSFORMER_MODEL_PATH_V1" "/app/RAG_system/new_ingestion/Table_Trans_Model" "Table Transformer V1 Model"
 
 
+# ── 1.8 Verify CUDA/GPU Availability ─────────────────────────────────────
+echo "Checking CUDA/GPU availability..."
+CUDA_READY=false
+for i in {1..3}; do
+    echo "       [Attempt $i/3] Checking if CUDA is ready..."
+    if python3 -c "import torch; torch.cuda.is_available() or exit(1)" >/dev/null 2>&1; then
+        echo "       CUDA is detected and fully functional!"
+        CUDA_READY=true
+        break
+    fi
+    echo "       WARNING: CUDA/GPU not detected. Waiting 3 seconds..."
+    sleep 3
+done
+
+if [ "$CUDA_READY" = false ]; then
+    echo "       CRITICAL: CUDA/GPU could not be initialized after 3 attempts."
+    echo "       Proceeding in CPU fallback mode..."
+fi
+
+
 # ── 2. Start Ollama in background ──────────────────────────────────────
 echo "[1/3] Starting Ollama server..."
 if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
