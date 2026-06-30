@@ -163,8 +163,21 @@ def delete_session_route(session_id: str):
 def get_combined_stats():
     stats = {
         "v1": {"status": "offline", "num_chunks": 0},
-        "v2": {"status": "offline", "num_chunks": 0, "graph": {"entities": 0, "relationships": 0}}
+        "v2": {"status": "offline", "num_chunks": 0, "graph": {"entities": 0, "relationships": 0}},
+        "hardware": {
+            "type": "CPU",
+            "name": "CPU"
+        }
     }
+    try:
+        import torch
+        if torch.cuda.is_available():
+            stats["hardware"] = {
+                "type": "GPU",
+                "name": torch.cuda.get_device_name(0)
+            }
+    except Exception as e:
+        logging.warning(f"GPU stats failure: {e}")
     try:
         res = requests.get("http://127.0.0.1:8002/api/stats", timeout=15)
         if res.status_code == 200:
