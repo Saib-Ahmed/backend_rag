@@ -29,6 +29,24 @@ from unified_db import (
 app = FastAPI(title="Unified RAG API")
 
 
+@app.on_event("startup")
+def startup_event():
+    import torch
+    try:
+        logging.info("--- GPU DIAGNOSTICS AT API STARTUP ---")
+        logging.info(f"PyTorch version: {torch.__version__}")
+        logging.info(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logging.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
+            logging.info(f"CUDA device count: {torch.cuda.device_count()}")
+        else:
+            logging.warning("CUDA is NOT available in python environment at startup!")
+        logging.info("--------------------------------------")
+    except Exception as diag_e:
+        logging.error(f"Failed to run GPU diagnostics in API startup: {diag_e}")
+
+
+
 @app.get("/ping")
 def ping():
     return {"status": "ok"}

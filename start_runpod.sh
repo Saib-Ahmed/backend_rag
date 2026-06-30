@@ -90,6 +90,16 @@ heal_dir "$TRANSFORMER_MODEL_PATH_V1" "/app/RAG_system/new_ingestion/Table_Trans
 
 # ── 1.8 Verify CUDA/GPU Availability ─────────────────────────────────────
 echo "Checking CUDA/GPU availability..."
+echo "=== GPU Environment Debugging ==="
+echo "Python path: $(which python3)"
+echo "NVIDIA SMI status:"
+nvidia-smi || echo "nvidia-smi is NOT working or not available"
+echo "Device list in /dev/nvidia*:"
+ls -lh /dev/nvidia* || echo "No nvidia device files found in /dev/"
+echo "PyTorch CUDA capabilities:"
+python3 -c "import torch; print('  PyTorch Version:', torch.__version__); print('  CUDA Available in PyTorch:', torch.cuda.is_available()); print('  CUDA Version in PyTorch:', torch.version.cuda); print('  Device Count:', torch.cuda.device_count() if torch.cuda.is_available() else 0)" || echo "Failed to run PyTorch diagnostic check"
+echo "================================="
+
 CUDA_READY=false
 for i in 1 2 3; do
     echo "       [Attempt $i/3] Checking if CUDA is ready..."
@@ -98,6 +108,10 @@ for i in 1 2 3; do
         CUDA_READY=true
         break
     fi
+    
+    echo "       Detail of Failure on Attempt $i:"
+    python3 -c "import torch; print('         PyTorch cuda.is_available():', torch.cuda.is_available())" 2>/dev/null || true
+    ls -lh /dev/nvidia* 2>/dev/null | sed 's/^/         /' || echo "         No nvidia device files found"
     
     if [ $i -eq 1 ]; then
         echo "       WARNING: CUDA/GPU not detected. Waiting 20 seconds before the second attempt..."
@@ -112,6 +126,7 @@ if [ "$CUDA_READY" = false ]; then
     echo "       CRITICAL: CUDA/GPU could not be initialized after 3 attempts."
     echo "       Proceeding in CPU fallback mode..."
 fi
+
 
 
 
