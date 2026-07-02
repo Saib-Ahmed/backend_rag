@@ -4,7 +4,7 @@ import json
 import logging
 from typing import List, Optional
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, BackgroundTasks, Request
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -98,6 +98,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def log_request_source(request: Request, call_next):
+    path = request.url.path
+    if path in ("/ping", "/stats"):
+        x_forwarded_for = request.headers.get("x-forwarded-for")
+        x_real_ip = request.headers.get("x-real-ip")
+        user_agent = request.headers.get("user-agent")
+        client_host = request.client.host if request.client else "unknown"
+        logging.info(
+            f"[Request Trace] Path: {path} | Client Host: {client_host} | "
+            f"X-Forwarded-For: {x_forwarded_for} | X-Real-IP: {x_real_ip} | User-Agent: {user_agent}"
+        )
+    response = await call_next(request)
+    return response
 
 class AuthRequest(BaseModel):
     username: str
