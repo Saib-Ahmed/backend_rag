@@ -55,11 +55,11 @@ class ClaudeClient:
         Raises ClaudeGenerationError on any hard failure.
         """
         payload = {
-            "model":       self.model,
-            "max_tokens":  max_tokens,
-            "system":      system,
-            "messages":    [{"role": "user", "content": prompt}],
-            "temperature": temperature,
+            "model":      self.model,
+            "max_tokens": max_tokens,
+            "system":     system,
+            "messages":   [{"role": "user", "content": prompt}],
+            # temperature intentionally omitted — claude-sonnet-5 rejects it (adaptive thinking)
         }
 
         try:
@@ -100,11 +100,11 @@ class ClaudeClient:
         Streams tokens from Claude.
         """
         payload = {
-            "model":       self.model,
-            "max_tokens":  max_tokens,
-            "messages":    messages,
-            "stream":      True,
-            "temperature": temperature,
+            "model":      self.model,
+            "max_tokens": max_tokens,
+            "messages":   messages,
+            "stream":     True,
+            # temperature intentionally omitted — claude-sonnet-5 rejects it (adaptive thinking)
         }
         if system:
             payload["system"] = system
