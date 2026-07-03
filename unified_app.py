@@ -4,7 +4,8 @@ import json
 import logging
 from typing import List, Optional
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, BackgroundTasks, Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,8 @@ import tempfile
 import subprocess
 import speech_recognition as sr
 import imageio_ffmpeg
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -107,12 +110,39 @@ async def log_request_source(request: Request, call_next):
         x_real_ip = request.headers.get("x-real-ip")
         user_agent = request.headers.get("user-agent")
         client_host = request.client.host if request.client else "unknown"
-        logging.info(
+        print(
             f"[Request Trace] Path: {path} | Client Host: {client_host} | "
-            f"X-Forwarded-For: {x_forwarded_for} | X-Real-IP: {x_real_ip} | User-Agent: {user_agent}"
+            f"X-Forwarded-For: {x_forwarded_for} | X-Real-IP: {x_real_ip} | User-Agent: {user_agent}",
+            flush=True
         )
     response = await call_next(request)
     return response
+
+# ─── JWT Configuration ───────────────────────────────────────────────────────
+JWT_SECRET = os.environ.get("JWT_SECRET", "lexai-dev-secret-change-in-production-please")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = 24
+
+def create_access_token(data: dict) -> str:
+    payload = data.copy()
+    expire = datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS)
+    payload.update({"exp": expire})
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_access_token(token: str) -> Optional[dict]:
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        return None
+
+security = HTTPBearer(auto_error=False)
+
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[dict]:
+    if not credentials:
+        return None
+    payload = decode_access_token(credentials.credentials)
+    return payload
+# ─────────────────────────────────────────────────────────────────────────────
 
 class AuthRequest(BaseModel):
     username: str
@@ -128,6 +158,7 @@ class ChatRequest(BaseModel):
     query: str
     model: str = "v1" # "v1" (RAG_system) or "v2" (final_rag)
     user_id: str = "default_user"
+    use_claude: bool = False
 
 @app.post("/auth/register")
 def register(req: RegisterRequest):
@@ -135,7 +166,8 @@ def register(req: RegisterRequest):
     if not user_id:
         raise HTTPException(status_code=400, detail="Username or Email already exists")
     role = "admin" if req.email == "saib@gmail.com" else "user"
-    return {"user_id": user_id, "username": req.username, "email": req.email, "role": role}
+    token = create_access_token({"sub": user_id, "username": req.username, "email": req.email, "role": role})
+    return {"user_id": user_id, "username": req.username, "email": req.email, "role": role, "access_token": token, "token_type": "bearer"}
 
 @app.post("/auth/login")
 def login(req: AuthRequest):
@@ -143,12 +175,21 @@ def login(req: AuthRequest):
     if not user or not verify_password(req.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     role = "admin" if (user.get("email") == "saib@gmail.com" or user.get("username") == "saib@gmail.com" or user.get("role") == "admin") else "user"
+    token = create_access_token({"sub": user["user_id"], "username": user["username"], "email": user.get("email"), "role": role})
     return {
         "user_id": user["user_id"],
         "username": user["username"],
         "email": user.get("email"),
-        "role": role
+        "role": role,
+        "access_token": token,
+        "token_type": "bearer"
     }
+
+@app.get("/auth/verify")
+def verify_token(current_user: Optional[dict] = Depends(get_current_user)):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return {"valid": True, "user_id": current_user.get("sub"), "username": current_user.get("username"), "role": current_user.get("role")}
 
 @app.get("/sessions")
 def get_sessions(user_id: str = "default_user"):
@@ -244,7 +285,8 @@ def chat_stream(req: ChatRequest):
         try:
             res = requests.post("http://127.0.0.1:8003/chat/stream", json={
                 "query": req.query,
-                "session_id": session_id
+                "session_id": session_id,
+                "use_claude": req.use_claude
             }, stream=True, timeout=900)
             
             full_answer = []

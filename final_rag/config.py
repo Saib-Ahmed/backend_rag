@@ -21,6 +21,9 @@ SUMMARY_MODEL      = os.getenv("SUMMARY_MODEL", "qwen3.5:9b")
 SUMMARY_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 SUMMARY_MAX_CHARS  = 3500 
 
+# ── Claude ─────────────────────────────────────────────────────────────
+CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+CLAUDE_API_KEY     = os.getenv("CLAUDE_API_KEY")
 # ── Chunker ──────────────────────────────────────────────────────────── 
 CHUNK_SIZE         = 650
 CHUNK_OVERLAP      = 100

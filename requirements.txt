@@ -1,5 +1,6 @@
 # Removed cu121 extra index to prevent override
 bcrypt
+python-jose[cryptography]
 beautifulsoup4
 certifi
 doclayout-yolo==0.0.4

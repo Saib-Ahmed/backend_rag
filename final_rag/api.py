@@ -120,6 +120,7 @@ def shutdown():
 class ChatRequest(BaseModel):
     session_id: str
     query:      str
+    use_claude: bool = False
 
 
 class RenameTitleRequest(BaseModel):
@@ -223,6 +224,7 @@ def chat_stream(req: ChatRequest):
                 query           = req.query,
                 history         = history,
                 active_document = None,
+                use_claude      = req.use_claude,
             ):
                 if token.startswith("__METADATA__:"):
                     metadata_chunk = token

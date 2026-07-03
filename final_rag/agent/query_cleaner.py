@@ -13,6 +13,7 @@ import ollama
 from final_rag.agent.models import CleanedQuery, ComparisonArm, Subquery
 import final_rag.config as config
 from final_rag.prompts.cleaner_prompt import CLEANER_SYSTEM_PROMPT, build_cleaner_prompt
+from final_rag.agent.claude_client import ClaudeClient
 
 logger = logging.getLogger("agent.query_cleaner")
 
@@ -34,9 +35,10 @@ class QueryCleaner:
         embed_model: str = config.EMBED_MODEL,
         ollama_host: str = config.OLLAMA_BASE_URL,
     ):
-        self.model       = model
-        self.embed_model = embed_model
-        self.client      = ollama.Client(host=ollama_host)
+        self.model         = model
+        self.embed_model   = embed_model
+        self.client        = ollama.Client(host=ollama_host)
+        self.claude_client = ClaudeClient()
 
     def _batch_embed(self, texts: List[str]) -> List[List[float]]:
         """Embed all texts in a single batch call."""
@@ -75,20 +77,28 @@ class QueryCleaner:
                 raw = raw[6:].strip()
         return json.loads(raw)
 
-    def clean_query(self, query: str) -> Dict[str, Any]:
+    def clean_query(self, query: str, use_claude: bool = False) -> Dict[str, Any]:
         start       = time.perf_counter()
         user_prompt = build_cleaner_prompt(query)
 
         try:
-            response = self.client.generate(
-                model   = self.model,
-                system  = CLEANER_SYSTEM_PROMPT,
-                prompt  = user_prompt,
-                options = {"temperature": 0.0},
-                think   = False,    
-            )
+            if use_claude:
+                response_str = self.claude_client.generate(
+                    system      = CLEANER_SYSTEM_PROMPT,
+                    prompt      = user_prompt,
+                    temperature = config.CLEANER_TEMPERATURE,
+                )
+            else:
+                response = self.client.generate(
+                    model   = self.model,
+                    system  = CLEANER_SYSTEM_PROMPT,
+                    prompt  = user_prompt,
+                    options = {"temperature": 0.0},
+                    think   = False,    
+                )
+                response_str = response.response.strip()
 
-            parsed         = self._parse_raw(response.response.strip())
+            parsed         = self._parse_raw(response_str)
             improved_query = parsed.get("improved_query", query)
 
             # ── score + filter subqueries ──────────────────────────────
@@ -138,8 +148,8 @@ class QueryCleaner:
                 "processing_time_sec": round(time.perf_counter() - start, 3),
             }
 
-    def clean(self, query: str, active_document: str = None) -> CleanedQuery:
-        result = self.clean_query(query)
+    def clean(self, query: str, active_document: str = None, use_claude: bool = False) -> CleanedQuery:
+        result = self.clean_query(query, use_claude=use_claude)
 
         subqueries = [
             Subquery(query=sq["query"], weight=sq["weight"])

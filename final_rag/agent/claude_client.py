@@ -1,0 +1,157 @@
+"""
+agent/claude_client.py
+
+Claude API client (single model: claude-sonnet-5).
+Note: Sonnet 5 uses adaptive thinking by default and does not accept a
+custom `temperature` parameter — the API rejects it with a 400 if sent.
+So temperature is intentionally NOT included in the payload.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Generator
+
+import requests
+
+import final_rag.config as config
+
+logger = logging.getLogger("agent.claude_client")
+
+ENDPOINT = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+class ClaudeGenerationError(Exception):
+    """Raised when the Claude API call fails (hard failure)."""
+
+
+class ClaudeClient:
+    def __init__(self, model: str | None = None, api_key: str | None = None):
+        self.model   = model or config.CLAUDE_MODEL
+        self.api_key = api_key or config.CLAUDE_API_KEY
+        if not self.api_key:
+            logger.warning("[ClaudeClient] CLAUDE_API_KEY not set — calls will fail.")
+
+    def _headers(self) -> dict:
+        return {
+            "x-api-key":          self.api_key,
+            "anthropic-version":  ANTHROPIC_VERSION,
+            "content-type":       "application/json",
+        }
+
+    # ── Non-streaming: used by QueryCleaner ────────────────────────────
+
+    def generate(
+        self,
+        system:      str,
+        prompt:      str,
+        temperature: float = 0.0,
+        max_tokens:  int   = 2048,
+    ) -> str:
+        """
+        Single call to Claude (no fallback — one model).
+        Raises ClaudeGenerationError on any hard failure.
+        """
+        payload = {
+            "model":       self.model,
+            "max_tokens":  max_tokens,
+            "system":      system,
+            "messages":    [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+        }
+
+        try:
+            resp = requests.post(
+                ENDPOINT, headers=self._headers(), json=payload, timeout=120,
+            )
+            if not resp.ok:
+                logger.error("[ClaudeClient] generate() HTTP %s | %s", resp.status_code, resp.text[:300])
+            resp.raise_for_status()
+            data = resp.json()
+
+            content_blocks = data.get("content", [])
+            text = "".join(
+                block.get("text", "") for block in content_blocks
+                if block.get("type") == "text"
+            ).strip()
+
+            if not text:
+                raise ValueError("Empty content in Claude response")
+
+            logger.info("[ClaudeClient] generate() succeeded | model=%s", self.model)
+            return text
+
+        except Exception as e:
+            logger.error("[ClaudeClient] generate() failed | model=%s | error=%s", self.model, e)
+            raise ClaudeGenerationError(f"Claude generate() failed: {e}") from e
+
+    # ── Streaming: used by Orchestrator ─────────────────────────────────
+
+    def chat_stream(
+        self,
+        messages:    list[dict],
+        temperature: float = 1.0,
+        max_tokens:  int   = 8192,
+        system:      str | None = None,
+    ) -> Generator[str, None, None]:
+        """
+        Streams tokens from Claude.
+        """
+        payload = {
+            "model":       self.model,
+            "max_tokens":  max_tokens,
+            "messages":    messages,
+            "stream":      True,
+            "temperature": temperature,
+        }
+        if system:
+            payload["system"] = system
+
+        first_token_yielded = False
+
+        try:
+            with requests.post(
+                ENDPOINT, headers=self._headers(), json=payload, stream=True, timeout=120,
+            ) as resp:
+                if not resp.ok:
+                    logger.error("[ClaudeClient] chat_stream() HTTP %s | %s", resp.status_code, resp.text[:300])
+                resp.raise_for_status()
+
+                for raw_line in resp.iter_lines(decode_unicode=True):
+                    if not raw_line or not raw_line.startswith("data:"):
+                        continue
+                    data_str = raw_line[len("data:"):].strip()
+                    if not data_str:
+                        continue
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning("[ClaudeClient] Skipping unparsable SSE line: %s", data_str[:200])
+                        continue
+
+                    if chunk.get("type") == "content_block_delta":
+                        delta = chunk.get("delta", {})
+                        token = delta.get("text")
+                        if token:
+                            first_token_yielded = True
+                            yield token
+
+                    elif chunk.get("type") == "message_stop":
+                        break
+
+            logger.info("[ClaudeClient] chat_stream() completed | model=%s", self.model)
+
+        except Exception as e:
+            if first_token_yielded:
+                logger.error(
+                    "[ClaudeClient] chat_stream() failed MID-STREAM | model=%s | error=%s",
+                    self.model, e,
+                )
+            else:
+                logger.error(
+                    "[ClaudeClient] chat_stream() failed before first token | model=%s | error=%s",
+                    self.model, e,
+                )
+            raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e

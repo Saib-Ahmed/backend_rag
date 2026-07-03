@@ -3,9 +3,8 @@ final_rag/venv/
 venv/
 .venv/
 env/
-.env/
-
-
+**/.env
+**/.env.*
 
 # Document processing output and temp files
 .tmp.driveupload/
@@ -15,8 +14,18 @@ md_output/
 final_rag/md_output/
 __pycache__/
 *.pyc
+msme_sessions/
+
+# Logs
+log_dump.txt
+last_user_input.txt
+
+# OS/System files
+.DS_Store
+desktop.ini
+**/desktop.ini
+**/*/desktop.ini
 
 # IDE/Editor config
 .vscode/
 .idea/
-.DS_Store
