@@ -160,7 +160,7 @@ class Orchestrator:
 
         logger.info(
             "[Orchestrator] Starting stream | model=%s think=False num_ctx=%d max_tokens=%d | use_claude=%s",
-            config.CLAUDE_MODEL if use_claude else MODEL, NUM_CTX, MAX_TOKENS, use_claude,
+            config.CLAUDE_MODEL if use_claude else MODEL, NUM_CTX, config.CLAUDE_MAX_TOKENS if use_claude else MAX_TOKENS, use_claude,
         )
 
         try:
@@ -168,7 +168,7 @@ class Orchestrator:
                 stream = self.claude_client.chat_stream(
                     messages    = [{"role": "user", "content": prompt}],
                     temperature = config.GENERATOR_TEMPERATURE,
-                    max_tokens  = MAX_TOKENS,
+                    max_tokens  = config.CLAUDE_MAX_TOKENS,
                 )
                 first_token_time = None
                 token_count      = 0

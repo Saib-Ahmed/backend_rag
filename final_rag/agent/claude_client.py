@@ -48,12 +48,15 @@ class ClaudeClient:
         system:      str,
         prompt:      str,
         temperature: float = 0.0,
-        max_tokens:  int   = 2048,
+        max_tokens:  int | None = None,
     ) -> str:
         """
         Single call to Claude (no fallback — one model).
         Raises ClaudeGenerationError on any hard failure.
         """
+        if max_tokens is None:
+            max_tokens = getattr(config, "CLAUDE_MAX_TOKENS", 8192)
+
         payload = {
             "model":      self.model,
             "max_tokens": max_tokens,
@@ -93,12 +96,15 @@ class ClaudeClient:
         self,
         messages:    list[dict],
         temperature: float = 1.0,
-        max_tokens:  int   = 8192,
+        max_tokens:  int | None = None,
         system:      str | None = None,
     ) -> Generator[str, None, None]:
         """
         Streams tokens from Claude.
         """
+        if max_tokens is None:
+            max_tokens = getattr(config, "CLAUDE_MAX_TOKENS", 8192)
+
         payload = {
             "model":      self.model,
             "max_tokens": max_tokens,
