@@ -92,12 +92,14 @@ class SourceInfo(BaseModel):
     file_name:   str
     pages:       list[str]
     chunk_count: int
+    chunks:      list[dict] = Field(default_factory=list)
 
     def model_dump(self) -> dict:
         return {
             "file_name":   self.file_name,
             "pages":       self.pages,
             "chunk_count": self.chunk_count,
+            "chunks":      self.chunks,
         }
 
 

@@ -214,6 +214,7 @@ def chat_stream(req: ChatRequest):
     def event_generator():
         full_answer    = []
         metadata_chunk = ""
+        sources_list   = None
         source_name    = ""
         page_label     = ""
         page_no        = 0
@@ -228,6 +229,12 @@ def chat_stream(req: ChatRequest):
             ):
                 if token.startswith("__METADATA__:"):
                     metadata_chunk = token
+                    try:
+                        _, metadata_part = token.split("__METADATA__:")
+                        sources_list = json.loads(metadata_part.strip())
+                        yield f"data: {json.dumps({'metadata': sources_list})}\n\n"
+                    except Exception as parse_err:
+                        logger.error("Failed to yield metadata: %s", parse_err)
                     continue
                 full_answer.append(token)
                 yield f"data: {json.dumps({'token': token})}\n\n"
@@ -243,6 +250,7 @@ def chat_stream(req: ChatRequest):
             try:
                 _, metadata_part = metadata_chunk.split("__METADATA__:")
                 sources = json.loads(metadata_part.strip())
+                sources_list = sources
                 if sources:
                     top_source  = sources[0]
                     source_name = top_source.get("file_name", "")
@@ -265,6 +273,7 @@ def chat_stream(req: ChatRequest):
                 source     = source_name,
                 page       = page_no,
                 page_label = page_label,
+                sources    = sources_list,
             )
         except Exception as e:
             logger.error("Failed to persist conversation: %s", e)
@@ -295,7 +304,11 @@ def get_history(session_id: str, limit: int = Query(default=100, le=200)):
     messages = []
     for turn in turns:
         messages.append({"role": "user",      "text": turn.question})
-        messages.append({"role": "assistant", "text": turn.answer})
+        messages.append({
+            "role": "assistant",
+            "text": turn.answer,
+            "sources": getattr(turn, "sources", []),
+        })
     return {"session_id": session_id, "messages": messages}
 
 

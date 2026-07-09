@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, Backg
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import requests
 import tempfile
 import subprocess
@@ -94,10 +94,15 @@ else:
     BACKUP_MD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_markdown")
 os.makedirs(BACKUP_MD_DIR, exist_ok=True)
 
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://lexai-proxy.suyashjai2010.workers.dev,http://localhost:8081,http://localhost:19006"
+)
+ALLOWED_ORIGINS_LIST = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=ALLOWED_ORIGINS_LIST,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -110,16 +115,20 @@ async def log_request_source(request: Request, call_next):
         x_real_ip = request.headers.get("x-real-ip")
         user_agent = request.headers.get("user-agent")
         client_host = request.client.host if request.client else "unknown"
-        print(
-            f"[Request Trace] Path: {path} | Client Host: {client_host} | "
-            f"X-Forwarded-For: {x_forwarded_for} | X-Real-IP: {x_real_ip} | User-Agent: {user_agent}",
-            flush=True
+        logging.info(
+            "[Request Trace] Path: %s | Client: %s | X-Forwarded-For: %s | X-Real-IP: %s | UA: %s",
+            path, client_host, x_forwarded_for, x_real_ip, user_agent
         )
     response = await call_next(request)
     return response
 
 # ─── JWT Configuration ───────────────────────────────────────────────────────
-JWT_SECRET = os.environ.get("JWT_SECRET", "lexai-dev-secret-change-in-production-please")
+JWT_SECRET = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is not set. "
+        "Generate one with: openssl rand -hex 32"
+    )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 
@@ -142,6 +151,37 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
         return None
     payload = decode_access_token(credentials.credentials)
     return payload
+
+def require_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
+    """Strict auth guard — raises HTTP 401 if token is missing or invalid."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    payload = decode_access_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload
+
+# ── Global Auth Enforcement Middleware ────────────────────────────────────────────
+# Paths that are accessible without a JWT token
+_PUBLIC_PATHS = {"/ping", "/stats", "/docs", "/openapi.json", "/redoc"}
+
+@app.middleware("http")
+async def enforce_authentication(request: Request, call_next):
+    """Block every non-public route that does not carry a valid JWT Bearer token."""
+    path = request.url.path
+    # Allow OPTIONS preflight, public endpoints, and all /auth/* routes
+    if request.method == "OPTIONS" or path in _PUBLIC_PATHS or path.startswith("/auth/"):
+        return await call_next(request)
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    token = auth_header.split(" ", 1)[1].strip()
+    payload = decode_access_token(token)
+    if not payload:
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"})
+    # Attach verified user to request state so route handlers can read it
+    request.state.current_user = payload
+    return await call_next(request)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AuthRequest(BaseModel):
@@ -156,16 +196,18 @@ class RegisterRequest(BaseModel):
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     query: str
-    model: str = "v1" # "v1" (RAG_system) or "v2" (final_rag)
-    user_id: str = "default_user"
+    model: str = "v1"  # "v1" (RAG_system) or "v2" (final_rag)
+    user_id: Optional[str] = None  # Ignored — server derives user_id from the verified JWT
     use_claude: bool = False
+
+_ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
 
 @app.post("/auth/register")
 def register(req: RegisterRequest):
     user_id = create_user(req.username, req.email, req.password)
     if not user_id:
         raise HTTPException(status_code=400, detail="Username or Email already exists")
-    role = "admin" if req.email == "saib@gmail.com" else "user"
+    role = "admin" if (_ADMIN_EMAIL and req.email == _ADMIN_EMAIL) else "user"
     token = create_access_token({"sub": user_id, "username": req.username, "email": req.email, "role": role})
     return {"user_id": user_id, "username": req.username, "email": req.email, "role": role, "access_token": token, "token_type": "bearer"}
 
@@ -174,7 +216,7 @@ def login(req: AuthRequest):
     user = get_user(req.username)
     if not user or not verify_password(req.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    role = "admin" if (user.get("email") == "saib@gmail.com" or user.get("username") == "saib@gmail.com" or user.get("role") == "admin") else "user"
+    role = user.get("role", "user")  # Role is read from DB — not determined by email string comparison
     token = create_access_token({"sub": user["user_id"], "username": user["username"], "email": user.get("email"), "role": role})
     return {
         "user_id": user["user_id"],
@@ -192,14 +234,22 @@ def verify_token(current_user: Optional[dict] = Depends(get_current_user)):
     return {"valid": True, "user_id": current_user.get("sub"), "username": current_user.get("username"), "role": current_user.get("role")}
 
 @app.get("/sessions")
-def get_sessions(user_id: str = "default_user"):
+def get_sessions(request: Request):
+    user_id = request.state.current_user["sub"]
     sessions = get_user_sessions(user_id)
     return [{"id": s["session_id"], "title": s["title"]} for s in sessions]
 
 @app.get("/sessions/{session_id}/history")
 def get_history(session_id: str):
     history = get_chat_history(session_id)
-    messages = [{"role": msg["role"], "text": msg["content"]} for msg in history]
+    messages = [
+        {
+            "role": msg["role"],
+            "text": msg["content"],
+            "sources": msg.get("sources", [])
+        }
+        for msg in history
+    ]
     return {"session_id": session_id, "messages": messages}
 
 class RenameSessionRequest(BaseModel):
@@ -253,13 +303,14 @@ def get_combined_stats():
     return stats
 
 @app.post("/chat/stream")
-def chat_stream(req: ChatRequest):
+def chat_stream(req: ChatRequest, request: Request):
+    user_id = request.state.current_user["sub"]
     session_id = req.session_id
     if not session_id:
         title = req.query[:30] + "..." if len(req.query) > 30 else req.query
-        session_id = create_session(req.user_id, title)
-    
-    append_message(session_id, "user", req.query, req.model, user_id=req.user_id)
+        session_id = create_session(user_id, title)
+
+    append_message(session_id, "user", req.query, req.model, user_id=user_id)
 
     def generate_v1():
         # Proxy to RAG_system (port 8002) with true real-time SSE streaming
@@ -413,6 +464,14 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
         logging.error(f"[Background Task {task_id}] Unexpected error: {type(e).__name__}: {e}", exc_info=True)
         upload_tasks[task_id] = {"status": "failed", "error": str(e)}
 
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
+_ALLOWED_MIME_TYPES = {
+    "application/pdf", "text/plain", "text/markdown",
+    "image/jpeg", "image/png", "image/tiff", "image/webp",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
 @app.post("/upload")
 def upload_file(
     background_tasks: BackgroundTasks,
@@ -425,8 +484,17 @@ def upload_file(
     creation_date: str = Form(""),
 ):
     try:
-        # Read the file content synchronously before returning the response so it's available in the background
-        file_content = file.file.read()
+        # Validate MIME type against allowlist
+        mime = (file.content_type or "").split(";")[0].strip()
+        if mime and mime not in _ALLOWED_MIME_TYPES:
+            raise HTTPException(
+                status_code=415,
+                detail=f"Unsupported file type '{mime}'. Allowed: PDF, plain text, images, Word documents."
+            )
+        # Read with hard size cap to prevent memory exhaustion
+        file_content = file.file.read(_MAX_UPLOAD_BYTES + 1)
+        if len(file_content) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="File too large. Maximum allowed size is 50 MB.")
         task_id = str(uuid.uuid4())
         
         # Register the task
@@ -452,7 +520,7 @@ def upload_file(
         return {"status": "processing", "task_id": task_id, "message": "Document ingestion started in background"}
     except Exception as e:
         logging.error(f"[Upload Init] Failed to start upload task: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.get("/upload/status/{task_id}")
 def get_upload_status(task_id: str):
@@ -482,7 +550,7 @@ def search_documents_route(q: str = Query(..., min_length=1), rag_version: str =
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.get("/documents/{file_name}/content")
 def get_document_content_route(file_name: str, rag_version: str = Query("version1")):
@@ -505,7 +573,7 @@ def get_document_content_route(file_name: str, rag_version: str = Query("version
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 class DocumentContentUpdateUnified(BaseModel):
     content: str
@@ -531,7 +599,7 @@ def update_document_content_route(file_name: str, req: DocumentContentUpdateUnif
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.delete("/documents/{file_name}")
 def delete_document_route(file_name: str, rag_version: str = Query("version1")):
@@ -559,7 +627,7 @@ def delete_document_route(file_name: str, rag_version: str = Query("version1")):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.get("/documents/metadata")
 def get_documents_metadata_route():
@@ -568,7 +636,7 @@ def get_documents_metadata_route():
         return get_all_document_metadata()
     except Exception as e:
         logging.error(f"Failed to get document metadata: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 
 class UpdateDocumentMetadataRequest(BaseModel):
@@ -595,7 +663,7 @@ def update_document_metadata_route(file_name: str, req: UpdateDocumentMetadataRe
         return {"status": "success" if success else "no_change"}
     except Exception as e:
         logging.error(f"Failed to update metadata for '{file_name}': {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.delete("/documents")
 def clear_all_documents_route(rag_version: str = Query("version1")):
@@ -612,7 +680,7 @@ def clear_all_documents_route(rag_version: str = Query("version1")):
         else:
             raise HTTPException(status_code=res.status_code, detail=res.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.post("/documents/preview-parse")
 async def preview_parse_route(
@@ -639,7 +707,7 @@ async def preview_parse_route(
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.post("/documents/replace")
 async def replace_document_route(
@@ -695,7 +763,7 @@ async def replace_document_route(
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.get("/query_trace")
 def get_query_trace_route(rag_version: str = Query("version1")):
@@ -745,36 +813,10 @@ async def transcribe_audio(file: UploadFile = File(...)):
         logging.error(f"Transcription failed: {e}")
         if os.path.exists(tmp_in_path): os.remove(tmp_in_path)
         if os.path.exists(tmp_out_path): os.remove(tmp_out_path)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
-@app.get("/debug/ollama")
-def debug_ollama():
-    try:
-        import subprocess
-        # Check running processes
-        ps_out = subprocess.check_output(["ps", "aux"], text=True)
-        # Check ollama status
-        try:
-            ollama_ps = subprocess.check_output(["ollama", "ps"], text=True)
-        except Exception as e:
-            ollama_ps = f"Ollama ps failed: {e}"
-            
-        # Read last 100 lines of ollama log
-        log_out = ""
-        if os.path.exists("/var/log/ollama.log"):
-            with open("/var/log/ollama.log", "r") as f:
-                lines = f.readlines()
-                log_out = "".join(lines[-100:])
-        else:
-            log_out = "/var/log/ollama.log not found"
-            
-        return {
-            "ps": ps_out,
-            "ollama_ps": ollama_ps,
-            "ollama_log": log_out
-        }
-    except Exception as e:
-        return {"error": str(e)}
+# /debug/ollama endpoint removed — it exposed the full system process list (ps aux)
+# and system logs without any authentication. Do not restore in production.
 
 # ==========================================
 # MSME Extraction Endpoints
@@ -783,18 +825,19 @@ def debug_ollama():
 class MsmeChatRequest(BaseModel):
     session_id: Optional[str] = None
     query: str
-    user_id: str = "default_user"
+    user_id: Optional[str] = None  # Ignored — server derives user_id from the verified JWT
 
 
 @app.post("/chat/msme")
-def chat_msme_stream(req: MsmeChatRequest):
+def chat_msme_stream(req: MsmeChatRequest, request: Request):
     """Streaming MSME extraction from text (voice transcript or typed description)."""
+    user_id = request.state.current_user["sub"]
     session_id = req.session_id
     if not session_id:
         title = req.query[:30] + "..." if len(req.query) > 30 else req.query
-        session_id = create_session(req.user_id, title)
+        session_id = create_session(user_id, title)
 
-    append_message(session_id, "user", req.query, "msme", user_id=req.user_id)
+    append_message(session_id, "user", req.query, "msme", user_id=user_id)
 
     def generate():
         try:
@@ -841,7 +884,7 @@ def chat_msme_stream(req: MsmeChatRequest):
 
             # Save assistant response
             summary = f"Extracted {result.get('fields_updated', 0)} fields. Progress: {result.get('filled_fields', 0)}/{result.get('total_fields', 0)}"
-            append_message(session_id, "assistant", summary, "msme", user_id=req.user_id)
+            append_message(session_id, "assistant", summary, "msme", user_id=user_id)
 
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
         except Exception as e:
@@ -990,7 +1033,7 @@ async def msme_extract_file(
 
     except Exception as e:
         logging.error(f"[MSME Extract Init] Failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 
 @app.get("/msme/extract/status/{task_id}")
@@ -1015,7 +1058,7 @@ def get_msme_form(session_id: str):
         }
     except Exception as e:
         logging.error(f"MSME form fetch error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 
 @app.delete("/msme/session/{session_id}")
@@ -1027,7 +1070,7 @@ def reset_msme_session(session_id: str):
         return {"status": "success", "message": f"MSME session {session_id} reset."}
     except Exception as e:
         logging.error(f"MSME session reset error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 
 if __name__ == "__main__":

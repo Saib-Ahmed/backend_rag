@@ -82,16 +82,17 @@ def health_check_db():
     # simple ping
     unified_db.client.admin.command('ping')
 
-def insert_conversation(session_id, question, answer, source=None, page=None, page_label=None):
+def insert_conversation(session_id, question, answer, source=None, page=None, page_label=None, sources=None):
     if not unified_db: return
     metrics = {"source": source, "page": page, "page_label": page_label}
     # User message is already inserted by unified_app.py
-    unified_db.append_message(session_id, "assistant", answer, rag_version="v2", metrics=metrics)
+    unified_db.append_message(session_id, "assistant", answer, rag_version="v2", metrics=metrics, sources=sources)
 
 class DummyTurn:
-    def __init__(self, question, answer):
+    def __init__(self, question, answer, sources=None):
         self.question = question
         self.answer = answer
+        self.sources = sources or []
 
 def fetch_conversation_history(session_id, limit=6):
     if not unified_db: return []
@@ -103,12 +104,14 @@ def fetch_conversation_history(session_id, limit=6):
             if history[i]["role"] == "user":
                 q = history[i]["content"]
                 a = ""
+                sources = []
                 if i + 1 < len(history) and history[i+1]["role"] == "assistant":
                     a = history[i+1]["content"]
+                    sources = history[i+1].get("sources", [])
                     i += 2
                 else:
                     i += 1
-                turns.append(DummyTurn(q, a))
+                turns.append(DummyTurn(q, a, sources))
             else:
                 i += 1
         return turns[-limit:] if limit > 0 else turns

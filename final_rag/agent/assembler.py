@@ -341,14 +341,22 @@ class Assembler:
         sources = []
         for file_name, file_chunks in grouped.items():
             pages_set: set[str] = set()
+            chunk_details = []
             for c in file_chunks:
                 page_uncertain = "page_no_inference_failed" in c.warnings
+                display_page = "Unknown"
                 if c.page_label:
-                    label = f"~{c.page_label}" if page_uncertain else str(c.page_label)
-                    pages_set.add(label)
+                    display_page = f"~{c.page_label}" if page_uncertain else str(c.page_label)
                 elif c.page_no > 0:
-                    label = f"~{c.page_no}" if page_uncertain else str(c.page_no)
-                    pages_set.add(label)
+                    display_page = f"~{c.page_no}" if page_uncertain else str(c.page_no)
+                pages_set.add(display_page)
+
+                chunk_details.append({
+                    "text": c.text,
+                    "page": display_page,
+                    "section": c.section or "General",
+                    "score": c.rerank_score or c.qdrant_score or 0.0,
+                })
 
             pages = sorted(
                 pages_set,
@@ -358,6 +366,7 @@ class Assembler:
                 file_name   = file_name,
                 pages       = pages,
                 chunk_count = len(file_chunks),
+                chunks      = chunk_details,
             ))
 
         return sources
