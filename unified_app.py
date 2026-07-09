@@ -172,8 +172,8 @@ async def enforce_authentication(request: Request, call_next):
     # Allow OPTIONS preflight, public endpoints, and all /auth/* routes
     if request.method == "OPTIONS" or path in _PUBLIC_PATHS or path.startswith("/auth/"):
         return await call_next(request)
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    auth_header = request.headers.get("x-jwt-authorization") or request.headers.get("Authorization", "")
+    if not auth_header or not auth_header.startswith("Bearer "):
         return JSONResponse(status_code=401, content={"detail": "Authentication required"})
     token = auth_header.split(" ", 1)[1].strip()
     payload = decode_access_token(token)
