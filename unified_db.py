@@ -9,8 +9,9 @@ import logging
 
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 logger = logging.getLogger("unified_db")
-
-MONGO_URI = "mongodb+srv://shashankdev9745_db_user:hWfZ5o3dxY96axQL@cluster0.8igmf03.mongodb.net/?appName=Cluster0"
+MONGO_URI = os.environ.get("MONGO_URI")
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI environment variable is not set")
 
 try:
     import certifi
@@ -34,27 +35,31 @@ def init_db():
             db.sessions.create_index("user_id")
             db.history.create_index("session_id")
             db.document_metadata.create_index("file_name", unique=True)
+            # Check and seed admin user
+            admin_email = os.environ.get("ADMIN_EMAIL")
+            admin_password = os.environ.get("ADMIN_SEED_PASSWORD")
             
-            # Check and seed admin user saib@gmail.com / 123456
-            admin_email = "saib@gmail.com"
-            admin_user = db.users.find_one({"$or": [{"email": admin_email}, {"username": admin_email}]})
-            if not admin_user:
-                logger.info("Initializing admin user saib@gmail.com")
-                user_id = str(uuid.uuid4())
-                db.users.insert_one({
-                    "user_id": user_id,
-                    "username": "saib@gmail.com",
-                    "email": admin_email,
-                    "hashed_password": get_password_hash("123456"),
-                    "role": "admin",
-                    "created_at": datetime.utcnow()
-                })
+            if not admin_email or not admin_password:
+                logger.info("ADMIN_EMAIL or ADMIN_SEED_PASSWORD not set - skipping admin seed")
             else:
-                # Ensure the user has the admin role
-                db.users.update_one(
-                    {"user_id": admin_user["user_id"]},
-                    {"$set": {"role": "admin"}}
-                )
+                admin_user = db.users.find_one({"$or": [{"email": admin_email}, {"username": admin_email}]})
+                if not admin_user:
+                    logger.info(f"Initializing admin user {admin_email}")
+                    user_id = str(uuid.uuid4())
+                    db.users.insert_one({
+                        "user_id": user_id,
+                        "username": admin_email,
+                        "email": admin_email,
+                        "hashed_password": get_password_hash(admin_password),
+                        "role": "admin",
+                        "created_at": datetime.utcnow()
+                    })
+                else:
+                    # Ensure the user has the admin role
+                    db.users.update_one(
+                        {"user_id": admin_user["user_id"]},
+                        {"$set": {"role": "admin"}}
+                    )
         except Exception as e:
             logger.error(f"Error creating indexes or seeding admin user: {e}")
 
@@ -104,10 +109,7 @@ def create_session(user_id: str, title: str = "New Chat") -> str:
 
 def get_user_sessions(user_id: str) -> List[Dict[str, Any]]:
     if db is None: return []
-    if user_id == "default_user":
-        sessions = list(db.sessions.find().sort("updated_at", -1))
-    else:
-        sessions = list(db.sessions.find({"user_id": user_id}).sort("updated_at", -1))
+    sessions = list(db.sessions.find({"user_id": user_id}).sort("updated_at", -1))
     
     # ensure consistent return format
     return [{"session_id": s["session_id"], "title": s["title"], "updated_at": s.get("updated_at")} for s in sessions]
@@ -125,7 +127,7 @@ def delete_session(session_id: str):
     db.history.delete_many({"session_id": session_id})
 
 # --- HISTORY MANAGEMENT ---
-def append_message(session_id: str, role: str, content: str, rag_version: str = "unknown", sources: list = None, metrics: dict = None, user_id: str = "default_user"):
+def append_message(session_id: str, role: str, content: str, rag_version: str = "unknown", sources: list = None, metrics: dict = None, user_id: Optional[str] = None):
     if db is None: return
     db.history.insert_one({
         "session_id": session_id,

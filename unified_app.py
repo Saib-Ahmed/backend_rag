@@ -3,7 +3,7 @@ import os
 import json
 import logging
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, BackgroundTasks, Request, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uuid
@@ -16,6 +16,7 @@ import speech_recognition as sr
 import imageio_ffmpeg
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
+from cachetools import TTLCache
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -82,8 +83,8 @@ _configure_access_log_filters()
 
 # Global task registry for background uploads
 # Format: { "task_id": {"status": "processing" | "success" | "failed" | "already_exists", "data": {...}, "error": "..."} }
-upload_tasks = {}
-msme_upload_tasks = {}
+upload_tasks = TTLCache(maxsize=1000, ttl=3600)
+msme_upload_tasks = TTLCache(maxsize=1000, ttl=3600)
 
 # Ensure backup_markdown directory exists (immutable archive)
 # If running on RunPod serverless, store inside the persistent network volume at /runpod-volume
@@ -195,7 +196,7 @@ class RegisterRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
-    query: str
+    query: str = Field(..., max_length=8000)
     model: str = "v1"  # "v1" (RAG_system) or "v2" (final_rag)
     user_id: Optional[str] = None  # Ignored — server derives user_id from the verified JWT
     use_claude: bool = False
@@ -240,7 +241,10 @@ def get_sessions(request: Request):
     return [{"id": s["session_id"], "title": s["title"]} for s in sessions]
 
 @app.get("/sessions/{session_id}/history")
-def get_history(session_id: str):
+def get_history(session_id: str, current_user: dict = Depends(require_auth)):
+    user_id = current_user["user_id"]
+    if not any(s["session_id"] == session_id for s in get_user_sessions(user_id)):
+        raise HTTPException(status_code=403, detail="Forbidden: Session does not belong to you")
     history = get_chat_history(session_id)
     messages = [
         {
@@ -256,12 +260,18 @@ class RenameSessionRequest(BaseModel):
     title: str
 
 @app.patch("/sessions/{session_id}/title")
-def rename_session_route(session_id: str, req: RenameSessionRequest):
+def rename_session_route(session_id: str, req: RenameSessionRequest, current_user: dict = Depends(require_auth)):
+    user_id = current_user["user_id"]
+    if not any(s["session_id"] == session_id for s in get_user_sessions(user_id)):
+        raise HTTPException(status_code=403, detail="Forbidden: Session does not belong to you")
     update_session_title(session_id, req.title)
     return {"status": "success"}
 
 @app.delete("/sessions/{session_id}")
-def delete_session_route(session_id: str):
+def delete_session_route(session_id: str, current_user: dict = Depends(require_auth)):
+    user_id = current_user["user_id"]
+    if not any(s["session_id"] == session_id for s in get_user_sessions(user_id)):
+        raise HTTPException(status_code=403, detail="Forbidden: Session does not belong to you")
     delete_session(session_id)
     return {"status": "success"}
 
@@ -482,7 +492,10 @@ def upload_file(
     source: str = Form("public"),
     source_description: str = Form(""),
     creation_date: str = Form(""),
+    current_user: dict = Depends(require_auth),
 ):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Only admins can upload documents")
     try:
         # Validate MIME type against allowlist
         mime = (file.content_type or "").split(";")[0].strip()
@@ -579,7 +592,9 @@ class DocumentContentUpdateUnified(BaseModel):
     content: str
 
 @app.put("/documents/{file_name}/content")
-def update_document_content_route(file_name: str, req: DocumentContentUpdateUnified, rag_version: str = Query("version1")):
+def update_document_content_route(file_name: str, req: DocumentContentUpdateUnified, rag_version: str = Query("version1"), current_user: dict = Depends(require_auth)):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Only admins can modify documents")
     try:
         import urllib.parse
         encoded_name = urllib.parse.quote(file_name)
@@ -602,7 +617,9 @@ def update_document_content_route(file_name: str, req: DocumentContentUpdateUnif
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.delete("/documents/{file_name}")
-def delete_document_route(file_name: str, rag_version: str = Query("version1")):
+def delete_document_route(file_name: str, rag_version: str = Query("version1"), current_user: dict = Depends(require_auth)):
+    if current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Only admins can delete documents")
     try:
         # Determine target URL based on rag_version
         import urllib.parse
@@ -932,6 +949,10 @@ async def msme_extract_file(
     session_id: str = Form(...),
 ):
     """Upload a file (PDF/image/text) for MSME form extraction with active heartbeat streaming."""
+    import re
+    UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    if not UUID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id format")
     try:
         import time
         import threading
