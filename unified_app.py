@@ -241,8 +241,9 @@ def get_sessions(request: Request):
     return [{"id": s["session_id"], "title": s["title"]} for s in sessions]
 
 @app.get("/sessions/{session_id}/history")
-def get_history(session_id: str, current_user: dict = Depends(require_auth)):
-    user_id = current_user["user_id"]
+def get_history(session_id: str, request: Request):
+    current_user = request.state.current_user
+    user_id = current_user["sub"]
     if not any(s["session_id"] == session_id for s in get_user_sessions(user_id)):
         raise HTTPException(status_code=403, detail="Forbidden: Session does not belong to you")
     history = get_chat_history(session_id)
@@ -260,16 +261,18 @@ class RenameSessionRequest(BaseModel):
     title: str
 
 @app.patch("/sessions/{session_id}/title")
-def rename_session_route(session_id: str, req: RenameSessionRequest, current_user: dict = Depends(require_auth)):
-    user_id = current_user["user_id"]
+def rename_session_route(session_id: str, req: RenameSessionRequest, request: Request):
+    current_user = request.state.current_user
+    user_id = current_user["sub"]
     if not any(s["session_id"] == session_id for s in get_user_sessions(user_id)):
         raise HTTPException(status_code=403, detail="Forbidden: Session does not belong to you")
     update_session_title(session_id, req.title)
     return {"status": "success"}
 
 @app.delete("/sessions/{session_id}")
-def delete_session_route(session_id: str, current_user: dict = Depends(require_auth)):
-    user_id = current_user["user_id"]
+def delete_session_route(session_id: str, request: Request):
+    current_user = request.state.current_user
+    user_id = current_user["sub"]
     if not any(s["session_id"] == session_id for s in get_user_sessions(user_id)):
         raise HTTPException(status_code=403, detail="Forbidden: Session does not belong to you")
     delete_session(session_id)
@@ -492,8 +495,9 @@ def upload_file(
     source: str = Form("public"),
     source_description: str = Form(""),
     creation_date: str = Form(""),
-    current_user: dict = Depends(require_auth),
+    request: Request = None,
 ):
+    current_user = request.state.current_user
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Forbidden: Only admins can upload documents")
     try:
@@ -592,7 +596,8 @@ class DocumentContentUpdateUnified(BaseModel):
     content: str
 
 @app.put("/documents/{file_name}/content")
-def update_document_content_route(file_name: str, req: DocumentContentUpdateUnified, rag_version: str = Query("version1"), current_user: dict = Depends(require_auth)):
+def update_document_content_route(file_name: str, req: DocumentContentUpdateUnified, request: Request, rag_version: str = Query("version1")):
+    current_user = request.state.current_user
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Forbidden: Only admins can modify documents")
     try:
@@ -617,7 +622,8 @@ def update_document_content_route(file_name: str, req: DocumentContentUpdateUnif
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.delete("/documents/{file_name}")
-def delete_document_route(file_name: str, rag_version: str = Query("version1"), current_user: dict = Depends(require_auth)):
+def delete_document_route(file_name: str, request: Request, rag_version: str = Query("version1")):
+    current_user = request.state.current_user
     if current_user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Forbidden: Only admins can delete documents")
     try:
