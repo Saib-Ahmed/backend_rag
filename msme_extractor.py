@@ -288,17 +288,18 @@ class MsmeExtractor:
     # LLM extraction — NVIDIA Kimi K2.6 (fallback)
     # ------------------------------------------------------------------
     @staticmethod
-    def _extract_with_kimi(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list) -> dict:
-        """Fallback extraction using Moonshot Kimi-K2.6 via NVIDIA."""
+    def _extract_with_nvidia_model(file_bytes: bytes, filename: str, mime_type: str, missing_keys: list, model_name: str) -> dict:
+        """Fallback extraction using a specified NVIDIA NIM model."""
         nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
         if not _is_valid_key(nvidia_key):
             raise ValueError("NVIDIA_API_KEY is not set or is empty in the server environment variables.")
-        logger.info(f"Kimi fallback extraction for {len(missing_keys)} fields from '{filename}'...")
+        logger.info(f"NVIDIA model '{model_name}' fallback extraction for {len(missing_keys)} fields from '{filename}'...")
         invoke_url = "https://integrate.api.nvidia.com/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {nvidia_key}",
             "Accept": "application/json",
+            "Content-Type": "application/json",
         }
 
         dynamic_target = {key: "" for key in missing_keys}
@@ -358,7 +359,7 @@ class MsmeExtractor:
                 content_list[0]["text"] += f"\n\nHere is the document text:\n{document_text}"
 
         payload = {
-            "model": "moonshotai/kimi-k2.6",
+            "model": model_name,
             "messages": [{"role": "user", "content": content_list}],
             "max_tokens": 16384,
             "temperature": 0.1,
@@ -391,7 +392,7 @@ class MsmeExtractor:
                     return json.loads(content[start:end+1].strip())
                 except Exception:
                     pass
-            raise ValueError(f"Kimi returned text that could not be parsed as JSON: {content[:500]}...")
+            raise ValueError(f"NVIDIA model returned text that could not be parsed as JSON: {content[:500]}...")
 
     # ------------------------------------------------------------------
     # Main extraction pipeline
@@ -412,7 +413,7 @@ class MsmeExtractor:
                 **self.get_progress(),
             }
 
-        # Attempt extraction with Gemini first, fallback to Kimi
+        # Attempt extraction with Gemini first, fallback to NVIDIA models
         new_data = None
         provider_used = None
         try:
@@ -421,15 +422,22 @@ class MsmeExtractor:
             logger.info("✅ Gemini extraction succeeded.")
         except Exception as e:
             logger.warning(f"⚠️ Gemini failed: {e}")
-            try:
-                new_data = self._extract_with_kimi(file_bytes, filename, mime_type, missing_keys)
-                provider_used = "kimi"
-                logger.info("✅ Kimi extraction succeeded.")
-            except Exception as fallback_e:
-                logger.error(f"❌ Both providers failed. Kimi error: {fallback_e}")
+            
+            nvidia_models = ["z-ai/glm-5.2", "minimaxai/minimax-m3", "nvidia/nemotron-3-ultra-550b-a55b"]
+            for model_name in nvidia_models:
+                try:
+                    new_data = self._extract_with_nvidia_model(file_bytes, filename, mime_type, missing_keys, model_name)
+                    provider_used = f"nvidia_{model_name.replace('/', '_')}"
+                    logger.info(f"✅ NVIDIA model '{model_name}' extraction succeeded.")
+                    break
+                except Exception as fallback_e:
+                    logger.warning(f"⚠️ NVIDIA model '{model_name}' failed: {fallback_e}")
+            
+            if not new_data:
+                logger.error(f"❌ Both Gemini and all NVIDIA models failed.")
                 return {
                     "status": "error",
-                    "message": f"Both extraction providers failed. Gemini: {e}, Kimi: {fallback_e}",
+                    "message": f"Both extraction providers failed. Gemini: {e}, NVIDIA models failed.",
                     "fields_updated": 0,
                     **self.get_progress(),
                 }

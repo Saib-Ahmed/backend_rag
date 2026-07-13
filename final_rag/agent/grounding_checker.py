@@ -8,7 +8,7 @@ document chunks (i.e. no hallucinations / out-of-chunk fabrications).
 
 Provider strategy mirrors msme_extractor.py:
   Primary  → Gemini (gemini-2.0-flash)
-  Fallback → NVIDIA Kimi K2.6  (moonshotai/kimi-k2.6)
+  Fallback → NVIDIA GLM-5.2  (z-ai/glm-5.2)
 
 If both providers fail the checker returns verdict="UNCHECKED" so the main
 chat flow is NEVER broken.
@@ -40,7 +40,7 @@ logger = logging.getLogger("agent.grounding_checker")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 NVIDIA_GROUNDING_URL   = "https://integrate.api.nvidia.com/v1/chat/completions"
-NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "meta/llama-3.1-8b-instruct")
+NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
 GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
 GROUNDING_ENABLED      = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
@@ -183,13 +183,13 @@ def _check_with_gemini(prompt: str) -> dict:
     return result
 
 
-def _check_with_kimi(prompt: str) -> dict:
-    """Call NVIDIA Kimi K2.6 (fallback provider) — mirrors msme_extractor._extract_with_kimi."""
+def _check_with_nvidia_model(prompt: str, model_name: str) -> dict:
+    """Call a specific NVIDIA integrate API model."""
     nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
     if not _is_valid_key(nvidia_key):
         raise ValueError("NVIDIA_API_KEY is not set or is a placeholder.")
 
-    logger.info("[GroundingChecker] Calling NVIDIA Kimi K2.6 (%s)...", NVIDIA_GROUNDING_MODEL)
+    logger.info("[GroundingChecker] Calling NVIDIA model (%s)...", model_name)
 
     headers = {
         "Authorization": f"Bearer {nvidia_key}",
@@ -198,7 +198,7 @@ def _check_with_kimi(prompt: str) -> dict:
     }
 
     payload = {
-        "model":           NVIDIA_GROUNDING_MODEL,
+        "model":           model_name,
         "messages":        [{"role": "user", "content": prompt}],
         "max_tokens":      1024,
         "temperature":     0.0,
@@ -217,15 +217,15 @@ def _check_with_kimi(prompt: str) -> dict:
 
     raw_text = response.json()["choices"][0]["message"]["content"]
     result   = _parse_grounding_response(raw_text)
-    logger.info("[GroundingChecker] Kimi responded | verdict=%s score=%s",
-                result.get("verdict"), result.get("score"))
+    logger.info("[GroundingChecker] NVIDIA %s responded | verdict=%s score=%s",
+                model_name, result.get("verdict"), result.get("score"))
     return result
 
 
 # ── Main checker class ─────────────────────────────────────────────────────────
 class GroundingChecker:
     """
-    Faithfulness checker using Gemini → NVIDIA Kimi K2.6 fallback.
+    Faithfulness checker using Gemini → NVIDIA Multi-Model fallbacks.
 
     Usage:
         checker = GroundingChecker()
@@ -281,7 +281,7 @@ class GroundingChecker:
 
         prompt = _build_grounding_prompt(query, context_text, answer_text)
 
-        # ── Try Gemini first, fall back to Kimi (mirrors msme_extractor.extract) ──
+        # ── Try Gemini first, fall back to NVIDIA models list ──
         raw_result   = None
         provider_used = None
 
@@ -290,20 +290,23 @@ class GroundingChecker:
             provider_used = "gemini"
             logger.info("✅ [GroundingChecker] Gemini grounding succeeded.")
         except Exception as gemini_err:
-            logger.warning("⚠️  [GroundingChecker] Gemini failed: %s — trying Kimi fallback...", gemini_err)
-            try:
-                raw_result    = _check_with_kimi(prompt)
-                provider_used = "kimi"
-                logger.info("✅ [GroundingChecker] Kimi grounding succeeded.")
-            except Exception as kimi_err:
-                logger.error(
-                    "❌ [GroundingChecker] Both providers failed. "
-                    "Gemini: %s | Kimi: %s — returning UNCHECKED.",
-                    gemini_err, kimi_err,
-                )
+            logger.warning("⚠️  [GroundingChecker] Gemini failed: %s — trying NVIDIA NIM fallbacks...", gemini_err)
+            
+            nvidia_models = ["z-ai/glm-5.2", "minimaxai/minimax-m3", "nvidia/nemotron-3-ultra-550b-a55b"]
+            for model_name in nvidia_models:
+                try:
+                    raw_result    = _check_with_nvidia_model(prompt, model_name)
+                    provider_used = f"nvidia_{model_name.replace('/', '_')}"
+                    logger.info("✅ [GroundingChecker] NVIDIA model %s succeeded.", model_name)
+                    break
+                except Exception as fallback_e:
+                    logger.warning("⚠️  [GroundingChecker] NVIDIA model %s failed: %s", model_name, fallback_e)
+            
+            if not raw_result:
+                logger.error("❌ [GroundingChecker] Both Gemini and all NVIDIA models failed.")
                 return GroundingResult(
                     verdict="UNCHECKED",
-                    reasoning=f"Both providers failed. Gemini: {gemini_err} | Kimi: {kimi_err}",
+                    reasoning=f"Both providers failed. Gemini: {gemini_err} | NVIDIA models failed.",
                     provider="none",
                 )
 

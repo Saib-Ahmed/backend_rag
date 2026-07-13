@@ -29,7 +29,7 @@ CLAUDE_MAX_TOKENS  = int(os.getenv("CLAUDE_MAX_TOKENS", "8192"))
 GEMINI_API_KEY          = os.getenv("GEMINI_API_KEY", "")
 NVIDIA_API_KEY          = os.getenv("NVIDIA_API_KEY", "")
 GEMINI_GROUNDING_MODEL  = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
-NVIDIA_GROUNDING_MODEL  = os.getenv("NVIDIA_GROUNDING_MODEL", "meta/llama-3.1-8b-instruct")
+NVIDIA_GROUNDING_MODEL  = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 NVIDIA_GROUNDING_URL    = "https://integrate.api.nvidia.com/v1/chat/completions"
 GROUNDING_ENABLED       = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
 GROUNDING_TIMEOUT_SEC   = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
