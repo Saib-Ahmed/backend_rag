@@ -347,6 +347,7 @@ def get_history(session_id: str, limit: int = Query(default=100, le=200)):
             "role": "assistant",
             "text": turn.answer,
             "sources": getattr(turn, "sources", []),
+            "grounding": getattr(turn, "grounding", None)
         })
     return {"session_id": session_id, "messages": messages}
 

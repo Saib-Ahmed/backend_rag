@@ -40,7 +40,7 @@ logger = logging.getLogger("agent.grounding_checker")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 NVIDIA_GROUNDING_URL   = "https://integrate.api.nvidia.com/v1/chat/completions"
-NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "moonshotai/kimi-k2.6")
+NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "meta/llama-3.1-8b-instruct")
 GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
 GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
 GROUNDING_ENABLED      = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"

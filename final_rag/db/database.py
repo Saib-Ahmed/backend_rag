@@ -93,10 +93,11 @@ def insert_conversation(session_id, question, answer, source=None, page=None, pa
     unified_db.append_message(session_id, "assistant", answer, rag_version="v2", metrics=metrics, sources=sources)
 
 class DummyTurn:
-    def __init__(self, question, answer, sources=None):
+    def __init__(self, question, answer, sources=None, grounding=None):
         self.question = question
         self.answer = answer
         self.sources = sources or []
+        self.grounding = grounding
 
 def fetch_conversation_history(session_id, limit=6):
     if not unified_db: return []
@@ -109,13 +110,21 @@ def fetch_conversation_history(session_id, limit=6):
                 q = history[i]["content"]
                 a = ""
                 sources = []
+                grounding = None
                 if i + 1 < len(history) and history[i+1]["role"] == "assistant":
                     a = history[i+1]["content"]
                     sources = history[i+1].get("sources", [])
+                    metrics = history[i+1].get("metrics", {}) or {}
+                    if "grounding_verdict" in metrics:
+                        grounding = {
+                            "verdict": metrics.get("grounding_verdict"),
+                            "score": metrics.get("grounding_score", 0.0),
+                            "provider": metrics.get("grounding_provider", "none")
+                        }
                     i += 2
                 else:
                     i += 1
-                turns.append(DummyTurn(q, a, sources))
+                turns.append(DummyTurn(q, a, sources, grounding))
             else:
                 i += 1
         return turns[-limit:] if limit > 0 else turns
