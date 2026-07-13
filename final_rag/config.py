@@ -25,6 +25,15 @@ SUMMARY_MAX_CHARS  = 3500
 CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 CLAUDE_API_KEY     = os.getenv("CLAUDE_API_KEY")
 CLAUDE_MAX_TOKENS  = int(os.getenv("CLAUDE_MAX_TOKENS", "8192"))
+# ── Grounding Checker ──────────────────────────────────────────────────
+GEMINI_API_KEY          = os.getenv("GEMINI_API_KEY", "")
+NVIDIA_API_KEY          = os.getenv("NVIDIA_API_KEY", "")
+GEMINI_GROUNDING_MODEL  = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
+NVIDIA_GROUNDING_MODEL  = os.getenv("NVIDIA_GROUNDING_MODEL", "moonshotai/kimi-k2.6")
+NVIDIA_GROUNDING_URL    = "https://integrate.api.nvidia.com/v1/chat/completions"
+GROUNDING_ENABLED       = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
+GROUNDING_TIMEOUT_SEC   = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
+
 # ── Chunker ──────────────────────────────────────────────────────────── 
 CHUNK_SIZE         = 650
 CHUNK_OVERLAP      = 100

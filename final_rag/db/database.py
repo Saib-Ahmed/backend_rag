@@ -82,9 +82,13 @@ def health_check_db():
     # simple ping
     unified_db.client.admin.command('ping')
 
-def insert_conversation(session_id, question, answer, source=None, page=None, page_label=None, sources=None):
+def insert_conversation(session_id, question, answer, source=None, page=None, page_label=None, sources=None, grounding=None):
     if not unified_db: return
     metrics = {"source": source, "page": page, "page_label": page_label}
+    if grounding:
+        metrics["grounding_verdict"] = grounding.get("verdict")
+        metrics["grounding_score"]   = grounding.get("score")
+        metrics["grounding_provider"] = grounding.get("provider")
     # User message is already inserted by unified_app.py
     unified_db.append_message(session_id, "assistant", answer, rag_version="v2", metrics=metrics, sources=sources)
 

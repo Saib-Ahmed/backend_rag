@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 from final_rag.qdrant_storage.store import QdrantManager
 from final_rag.agent.orchestrator import get_orchestrator
+from final_rag.agent.grounding_checker import get_grounding_checker
 from final_rag.ingestion.embedder import get_embedder
 from final_rag.ingestion.parser import DocumentParser
 from final_rag.ingestion.chunker import DocumentChunker
@@ -67,25 +68,27 @@ app.add_middleware(
 
 
 # ── Globals ────────────────────────────────────────────────────────────
-db           = None
-embedder     = None
-orchestrator = None
-doc_parser   = None
-doc_chunker  = None
+db                = None
+embedder          = None
+orchestrator      = None
+doc_parser        = None
+doc_chunker       = None
+grounding_checker = None
 
 
 # ── Startup ────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
-    global db, embedder, orchestrator, doc_parser, doc_chunker
+    global db, embedder, orchestrator, doc_parser, doc_chunker, grounding_checker
     create_tables()
 
-    db           = QdrantManager()
+    db                = QdrantManager()
     db.setup_database()
-    embedder     = get_embedder(db=db)
-    orchestrator = get_orchestrator(embedder=embedder)
-    doc_parser   = DocumentParser(output_dir=config.MD_OUTPUT_DIR)
-    doc_chunker  = DocumentChunker()
+    embedder          = get_embedder(db=db)
+    orchestrator      = get_orchestrator(embedder=embedder)
+    doc_parser        = DocumentParser(output_dir=config.MD_OUTPUT_DIR)
+    doc_chunker       = DocumentChunker()
+    grounding_checker = get_grounding_checker()
 
     # Cleanup stuck records from previous crashed runs
     cleanup_stuck_documents()
@@ -246,6 +249,7 @@ def chat_stream(req: ChatRequest):
 
         complete_answer = "".join(full_answer).strip()
 
+        # ── Parse sources metadata from the stream ─────────────────────
         if metadata_chunk:
             try:
                 _, metadata_part = metadata_chunk.split("__METADATA__:")
@@ -261,6 +265,40 @@ def chat_stream(req: ChatRequest):
             except Exception as e:
                 logger.error("Failed to parse metadata: %s", e)
 
+        # ── Grounding / Faithfulness Check ─────────────────────────────
+        # Runs AFTER streaming is complete so it adds zero latency to first-token.
+        # Uses Gemini (primary) → NVIDIA Kimi K2.6 (fallback).
+        grounding_result = None
+        if complete_answer and not stream_error and grounding_checker:
+            try:
+                # Extract raw chunk texts from sources metadata
+                chunk_texts = []
+                if sources_list:
+                    for src in sources_list:
+                        for chunk_detail in src.get("chunks", []):
+                            text = chunk_detail.get("text", "").strip()
+                            if text:
+                                chunk_texts.append(text)
+
+                if chunk_texts:
+                    gr = grounding_checker.check(
+                        answer=complete_answer,
+                        chunks=chunk_texts,
+                        query=req.query,
+                    )
+                    grounding_result = gr.to_dict()
+                    logger.info(
+                        "[API] Grounding | verdict=%s score=%.2f provider=%s",
+                        gr.verdict, gr.score, gr.provider,
+                    )
+                    # Emit grounding event to frontend
+                    yield f"data: {json.dumps({'grounding': grounding_result})}\n\n"
+                else:
+                    logger.info("[API] Grounding skipped — no chunk texts in sources metadata.")
+            except Exception as ground_err:
+                logger.error("[API] Grounding check failed: %s", ground_err)
+
+        # ── Persist conversation + grounding verdict ───────────────────
         try:
             answer_to_save = (
                 f"[Error: {stream_error}]" if stream_error
@@ -274,6 +312,7 @@ def chat_stream(req: ChatRequest):
                 page       = page_no,
                 page_label = page_label,
                 sources    = sources_list,
+                grounding  = grounding_result,
             )
         except Exception as e:
             logger.error("Failed to persist conversation: %s", e)
