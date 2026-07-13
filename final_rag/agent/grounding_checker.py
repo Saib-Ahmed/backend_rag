@@ -83,10 +83,10 @@ def _is_valid_key(key: str) -> bool:
 
 def _build_grounding_prompt(query: str, context_text: str, answer: str) -> str:
     """
-    Strict faithfulness evaluation prompt.
+    Multilingual-aware faithfulness evaluation prompt.
     The LLM must respond with a single JSON object — no markdown, no prose.
     """
-    return f"""You are a strict faithfulness evaluator for a Retrieval-Augmented Generation (RAG) system.
+    return f"""You are an expert multilingual faithfulness evaluator for a Retrieval-Augmented Generation (RAG) system.
 
 TASK: Determine whether the GENERATED ANSWER is faithful to and fully supported by the PROVIDED CONTEXT.
 
@@ -99,25 +99,33 @@ TASK: Determine whether the GENERATED ANSWER is faithful to and fully supported 
 === GENERATED ANSWER ===
 {answer}
 
-=== EVALUATION RULES ===
-1. A claim is GROUNDED if it is directly stated or clearly implied by the context above.
-2. A claim is UNGROUNDED if it is absent from the context, is a general assumption, or contradicts the context.
-3. Ignore differences in phrasing or formatting — focus purely on factual faithfulness.
-4. If the answer says "Not found in uploaded documents." or similar — it IS grounded (correct refusal).
-5. Citation markers like [filename, Page X] are GROUNDED if the fact they cite appears in context.
+=== CRITICAL MULTILINGUAL EVALUATION RULES ===
+⚠️  IMPORTANT: The GENERATED ANSWER may be in a DIFFERENT LANGUAGE (e.g., Hindi, Urdu, Bengali) than the PROVIDED CONTEXT (which may be in English). This is EXPECTED and NORMAL.
+
+When the answer and context are in different languages:
+1. TRANSLATE the answer's claims mentally into English before comparing them to the context.
+2. A claim is GROUNDED if its MEANING is directly stated or clearly implied by the context, regardless of which language is used.
+3. Do NOT mark a claim as "unsupported" just because the exact wording does not appear in the context — check SEMANTIC equivalence across languages.
+4. Example: If the context says "registration would have an effect prospectively" and the answer says "पंजीकरण का प्रभाव भविष्यात्मक होता है", these are IDENTICAL in meaning → GROUNDED.
+5. Example: If the context says "Sub-section (n) of Section 2 defines a supplier" and the answer says "धारा 2(n) में 'सप्लायर' को परिभाषित किया गया", these are IDENTICAL in meaning → GROUNDED.
+6. A claim is UNGROUNDED ONLY if its MEANING is genuinely absent from the context, contradicts the context, or is a fabrication with no textual basis whatsoever.
+7. Ignore differences in phrasing, language, script, or formatting — focus purely on factual and semantic faithfulness.
+8. If the answer says "Not found in uploaded documents." or similar refusal — it IS grounded (correct refusal).
+9. Citation markers like [filename, Page X] are GROUNDED if the fact they cite appears in context.
+10. Legal section references (e.g., "Section 2(n)", "Chapter V", "Section 18") are GROUNDED if those sections or their effects are discussed in the context.
 
 === VERDICT SCALE ===
-- GROUNDED   : All claims are directly supported by the context (score 0.8–1.0)
-- PARTIAL    : Most claims are supported but 1–3 minor unsupported claims exist (score 0.4–0.79)
-- UNGROUNDED : Multiple or significant claims are NOT in the context (score 0.0–0.39)
+- GROUNDED   : All claims are semantically supported by the context (score 0.8–1.0)
+- PARTIAL    : Most claims are supported but 1–3 genuinely unsupported claims exist (score 0.4–0.79)
+- UNGROUNDED : Multiple or significant claims have NO semantic basis in the context (score 0.0–0.39)
 
 === OUTPUT ===
 Respond with ONLY this JSON object (no markdown, no extra text):
 {{
   "verdict": "GROUNDED" | "PARTIAL" | "UNGROUNDED",
   "score": <float 0.0 to 1.0>,
-  "unsupported_claims": ["claim1", "claim2"],
-  "reasoning": "<one sentence explanation>"
+  "unsupported_claims": ["claim1 in English", "claim2 in English"],
+  "reasoning": "<one sentence explanation in English>"
 }}"""
 
 
