@@ -817,3 +817,31 @@ def health_check():
             "status": "unhealthy",
             "error":  str(e),
         }
+
+# ── POST /verify_claim ──────────────────────────────────────────────────
+class VerifyClaimRequest(BaseModel):
+    claim: str
+    source_chunk: str
+    query: str = ""
+
+@app.post("/verify_claim")
+@app.post("/api/verify_claim")
+def verify_claim(req: VerifyClaimRequest):
+    if not grounding_checker:
+        raise HTTPException(status_code=500, detail="Grounding checker not initialized")
+    try:
+        gr = grounding_checker.check(
+            answer=req.claim,
+            chunks=[req.source_chunk],
+            query=req.query
+        )
+        return gr.to_dict()
+    except Exception as e:
+        logger.error("Single claim verification failed: %s", e)
+        return {
+            "verdict": "UNCHECKED",
+            "score": 0.0,
+            "unsupported_claims": [],
+            "reasoning": str(e),
+            "provider": "none"
+        }
