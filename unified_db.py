@@ -35,6 +35,7 @@ def init_db():
             db.sessions.create_index("user_id")
             db.history.create_index("session_id")
             db.document_metadata.create_index("file_name", unique=True)
+            db.document_metadata.create_index("file_hash")
             # Check and seed admin user
             admin_email = os.environ.get("ADMIN_EMAIL")
             admin_password = os.environ.get("ADMIN_SEED_PASSWORD")
@@ -189,6 +190,7 @@ def save_document_metadata(
     source_description: str = "",
     creation_date: str = "",
     rag_version: str = "version1",
+    file_hash: Optional[str] = None,
 ):
     """Save or update document metadata in MongoDB with version history tracking."""
     if db is None:
@@ -217,6 +219,8 @@ def save_document_metadata(
             "update_count": update_count,
             "update_history": update_history,
         }
+        if file_hash:
+            doc["file_hash"] = file_hash
         db.document_metadata.update_one(
             {"file_name": file_name},
             {"$set": doc}
@@ -233,6 +237,8 @@ def save_document_metadata(
             "update_count": 0,
             "update_history": [update_item]
         }
+        if file_hash:
+            doc["file_hash"] = file_hash
         db.document_metadata.insert_one(doc)
         
     logger.info(f"Saved metadata for '{file_name}' (updates: {update_count if existing else 0})")
@@ -243,6 +249,16 @@ def get_document_metadata(file_name: str) -> Optional[Dict[str, Any]]:
     if db is None:
         return None
     doc = db.document_metadata.find_one({"file_name": file_name}, {"_id": 0})
+    if doc and isinstance(doc.get("ingestion_date"), datetime):
+        doc["ingestion_date"] = doc["ingestion_date"].isoformat()
+    return doc
+
+
+def get_document_metadata_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
+    """Return metadata for a document matching the content file_hash."""
+    if db is None or not file_hash:
+        return None
+    doc = db.document_metadata.find_one({"file_hash": file_hash}, {"_id": 0})
     if doc and isinstance(doc.get("ingestion_date"), datetime):
         doc["ingestion_date"] = doc["ingestion_date"].isoformat()
     return doc

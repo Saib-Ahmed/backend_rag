@@ -14,31 +14,45 @@ except ImportError:
 
 logger = logging.getLogger("db.database")
 
+import hashlib
+
 def create_tables():
     if db is not None:
         try:
             db.documents.create_index("file_name", unique=True)
             db.documents.create_index("document_id", unique=True)
+            db.documents.create_index("file_hash")
         except Exception as e:
             logger.error(f"Error creating document indexes: {e}")
 
-def insert_document(document_id, file_name, doc_type, file_data, status="processing"):
+def insert_document(document_id, file_name, doc_type, file_data, status="processing", file_hash=None):
     if db is None: return "dummy_id"
     
+    if not file_hash and file_data:
+        try:
+            file_hash = hashlib.md5(file_data).hexdigest()
+        except Exception:
+            file_hash = None
+
     doc = {
         "document_id": document_id,
         "file_name": file_name,
         "doc_type": doc_type,
         "status": status,
-        "upload_time": datetime.utcnow()
+        "upload_time": datetime.utcnow(),
+        "file_hash": file_hash
     }
-    # Optional: file_data could be saved if needed, but it's usually large so better omitted unless required
     db.documents.insert_one(doc)
     return document_id
 
 def get_document_by_filename(file_name):
     if db is None: return None
     doc = db.documents.find_one({"file_name": file_name})
+    return doc if doc else None
+
+def get_document_by_hash(file_hash):
+    if db is None or not file_hash: return None
+    doc = db.documents.find_one({"file_hash": file_hash})
     return doc if doc else None
 
 def update_document_status(file_name, status):

@@ -62,7 +62,7 @@ QDRANT_STORAGE_PATH    = Path(os.getenv("QDRANT_STORAGE_PATH", BASE_DIR / "qdran
 
 # ── Retriever ──────────────────────────────────────────────────────────
 TOP_K_SEARCH              = 13 
-RERANKER_MODEL            = "Qwen/Qwen3-Reranker-0.6B"
+RERANKER_MODEL            = os.getenv("RERANKER_MODEL", "Qwen/Qwen3-Reranker-0.6B")
 
 # ── Retriever thresholds ───────────────────────────────────────────────
 CONFIDENCE_THRESHOLD      = 0.25 

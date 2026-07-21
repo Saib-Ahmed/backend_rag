@@ -25,13 +25,13 @@ python-dotenv
 python-multipart>=0.0.9
 qdrant-client>=1.7.0
 requests
-sentence-transformers==3.1.1
+sentence-transformers>=3.3.0
 SpeechRecognition
 tiktoken
 timm
-torch==2.4.0+cu124
-torchvision==0.19.0+cu124
-transformers==4.44.2
+torch==2.5.1+cu124
+torchvision==0.20.1+cu124
+transformers>=4.48.0
 uvicorn>=0.29.0
 google-genai
 tabulate

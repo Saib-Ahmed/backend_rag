@@ -87,9 +87,8 @@ RETRIEVAL_SCORE_THRESHOLD = 0.40
 
 # Table Row Chunking
 
-# Reranker Configuration (Local, optional)
-# CC-2: RETRIEVAL_CANDIDATE_K must exceed LOCAL_RERANKER_CANDIDATE_K to give
-# the reranker a meaningful wider pool to prune from. Equal values add latency with zero benefit.
+# Reranker Configuration (Local)
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "Qwen/Qwen3-Reranker-0.6B")
 
 # ============================================================================
 # GraphRAG Configuration (optional Neo4j recall boost)

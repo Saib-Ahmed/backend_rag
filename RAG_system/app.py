@@ -309,7 +309,30 @@ async def ingest_documents(
     total_chunks = 0
     errors = []
     
+    import hashlib
     for filename, data in file_data:
+        file_hash = hashlib.md5(data).hexdigest()
+        if unified_db:
+            try:
+                existing_by_hash = unified_db.get_document_metadata_by_hash(file_hash)
+                if existing_by_hash:
+                    logger.info("Skipping duplicate content upload for %s (matches %s)", filename, existing_by_hash.get("file_name"))
+                    return {
+                        "status": "already_exists",
+                        "message": f"Identical content is already stored under filename '{existing_by_hash.get('file_name')}'.",
+                        "total_chunks": 0
+                    }
+                existing_by_name = unified_db.get_document_metadata(filename)
+                if existing_by_name:
+                    logger.info("Skipping duplicate filename upload for %s", filename)
+                    return {
+                        "status": "already_exists",
+                        "message": "File is already stored in the database.",
+                        "total_chunks": 0
+                    }
+            except Exception as db_err:
+                logger.warning("Failed to check duplicate in unified_db: %s", db_err)
+
         adapter = _UploadedFileAdapter(filename, data)
         try:
             print(f"🚀 Starting ingestion for {filename}...")

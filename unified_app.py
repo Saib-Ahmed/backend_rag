@@ -450,6 +450,8 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
 
                 # ── Save metadata to MongoDB ──
                 try:
+                    import hashlib
+                    file_hash = hashlib.md5(file_content).hexdigest()
                     save_document_metadata(
                         file_name=filename,
                         doc_type=doc_type,
@@ -457,6 +459,7 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                         source_description=source_description,
                         creation_date=creation_date,
                         rag_version=rag_version,
+                        file_hash=file_hash,
                     )
                 except Exception as meta_err:
                     logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")

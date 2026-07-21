@@ -33,6 +33,7 @@ from final_rag.db.database import (
     upsert_session_title,
     delete_session,
     get_document_by_filename,
+    get_document_by_hash,
     insert_document,
     update_document_status,
     cleanup_stuck_documents,
@@ -131,12 +132,14 @@ class RenameTitleRequest(BaseModel):
 
 
 # ── POST /upload ───────────────────────────────────────────────────────
+import hashlib
+
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
 
     existing_doc = get_document_by_filename(file.filename)
     if existing_doc:
-        logger.info("File already exists, skipping: %s", file.filename)
+        logger.info("File already exists by filename, skipping: %s", file.filename)
         return {
             "status":  "already_exists",
             "message": "File is already stored in the database.",
@@ -148,6 +151,15 @@ async def upload_document(file: UploadFile = File(...)):
         logger.error("Failed to read uploaded file: %s", e)
         raise HTTPException(status_code=500, detail="Could not read file.")
 
+    file_hash = hashlib.md5(file_bytes).hexdigest()
+    existing_hash_doc = get_document_by_hash(file_hash)
+    if existing_hash_doc:
+        logger.info("Identical file content already exists: %s (existing: %s)", file.filename, existing_hash_doc.get("file_name"))
+        return {
+            "status":  "already_exists",
+            "message": f"Identical content is already stored under filename '{existing_hash_doc.get('file_name')}'.",
+        }
+
     doc_id   = str(uuid.uuid4())
     doc_type = Path(file.filename).suffix.lower()
 
@@ -158,6 +170,7 @@ async def upload_document(file: UploadFile = File(...)):
             doc_type    = doc_type,
             file_data   = file_bytes,
             status      = "processing",
+            file_hash   = file_hash,
         )
     except Exception as e:
         logger.error("Failed to create document placeholder: %s", e)
