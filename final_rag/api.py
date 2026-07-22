@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import uuid
+from typing import Optional
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
@@ -125,6 +126,7 @@ class ChatRequest(BaseModel):
     session_id: str
     query:      str
     use_claude: bool = False
+    model:      Optional[str] = None
 
 
 class RenameTitleRequest(BaseModel):
