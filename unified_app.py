@@ -1102,6 +1102,33 @@ def reset_msme_session(session_id: str):
         logging.error(f"MSME session reset error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
+# ── Citation Verification (proxy to final_rag on port 8003) ────────────
+class VerifyClaimRequest(BaseModel):
+    claim: str
+    source_chunk: str
+    query: str = ""
+
+@app.post("/verify_claim")
+@app.post("/api/verify_claim")
+def verify_claim_proxy(req: VerifyClaimRequest):
+    """Proxy verify_claim to final_rag (port 8003)."""
+    try:
+        res = requests.post(
+            "http://127.0.0.1:8003/verify_claim",
+            json=req.dict(),
+            timeout=60,
+        )
+        return JSONResponse(status_code=res.status_code, content=res.json())
+    except Exception as e:
+        logging.error(f"verify_claim proxy error: {e}")
+        return JSONResponse(status_code=500, content={
+            "verdict": "UNCHECKED",
+            "score": 0.0,
+            "unsupported_claims": [],
+            "reasoning": f"Proxy error: {e}",
+            "provider": "none",
+        })
+
 
 if __name__ == "__main__":
     import uvicorn
