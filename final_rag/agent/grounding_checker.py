@@ -293,32 +293,37 @@ class GroundingChecker:
 
         prompt = _build_grounding_prompt(query, context_text, answer_text)
 
-        # ── Try Gemini first, fall back to NVIDIA models list ──
+        # ── Try NVIDIA GLM-5.2 first, fall back to Gemini & other models ──
         raw_result   = None
         provider_used = None
 
         try:
-            raw_result    = _check_with_gemini(prompt)
-            provider_used = "gemini"
-            logger.info("✅ [GroundingChecker] Gemini grounding succeeded.")
-        except Exception as gemini_err:
-            logger.warning("⚠️  [GroundingChecker] Gemini failed: %s — trying NVIDIA NIM fallbacks...", gemini_err)
+            raw_result    = _check_with_nvidia_model(prompt, "z-ai/glm-5.2")
+            provider_used = "nvidia_z-ai_glm-5.2"
+            logger.info("✅ [GroundingChecker] NVIDIA GLM-5.2 grounding succeeded.")
+        except Exception as glm_err:
+            logger.warning("⚠️  [GroundingChecker] NVIDIA GLM-5.2 failed: %s — trying Gemini & other fallbacks...", glm_err)
             
-            nvidia_models = ["z-ai/glm-5.2", "minimaxai/minimax-m3", "nvidia/nemotron-3-ultra-550b-a55b"]
-            for model_name in nvidia_models:
+            fallbacks = [
+                ("gemini", lambda: _check_with_gemini(prompt)),
+                ("nvidia_minimaxai_minimax-m3", lambda: _check_with_nvidia_model(prompt, "minimaxai/minimax-m3")),
+                ("nvidia_nvidia_nemotron-3-ultra-550b-a55b", lambda: _check_with_nvidia_model(prompt, "nvidia/nemotron-3-ultra-550b-a55b"))
+            ]
+            
+            for provider_name, checker_func in fallbacks:
                 try:
-                    raw_result    = _check_with_nvidia_model(prompt, model_name)
-                    provider_used = f"nvidia_{model_name.replace('/', '_')}"
-                    logger.info("✅ [GroundingChecker] NVIDIA model %s succeeded.", model_name)
+                    raw_result    = checker_func()
+                    provider_used = provider_name
+                    logger.info("✅ [GroundingChecker] Fallback model %s succeeded.", provider_name)
                     break
                 except Exception as fallback_e:
-                    logger.warning("⚠️  [GroundingChecker] NVIDIA model %s failed: %s", model_name, fallback_e)
+                    logger.warning("⚠️  [GroundingChecker] Fallback model %s failed: %s", provider_name, fallback_e)
             
             if not raw_result:
-                logger.error("❌ [GroundingChecker] Both Gemini and all NVIDIA models failed.")
+                logger.error("❌ [GroundingChecker] Both GLM-5.2, Gemini, and other NVIDIA fallbacks failed.")
                 return GroundingResult(
                     verdict="UNCHECKED",
-                    reasoning=f"Both providers failed. Gemini: {gemini_err} | NVIDIA models failed.",
+                    reasoning=f"All providers failed. GLM-5.2: {glm_err} | Fallbacks failed.",
                     provider="none",
                 )
 
