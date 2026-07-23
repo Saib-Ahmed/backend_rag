@@ -19,8 +19,7 @@ GENERATOR_MODEL = os.getenv("GENERATOR_MODEL",   "qwen3.5:9b")
 # ── Summary LLM (ingestion only) ───────────────────────────────────────
 SUMMARY_MODEL      = os.getenv("SUMMARY_MODEL", "qwen3.5:9b") 
 SUMMARY_OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
-SUMMARY_MAX_CHARS  = 3500 
-
+SUMMARY_MAX_CHARS  = 6000
 # ── Claude ─────────────────────────────────────────────────────────────
 CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 CLAUDE_API_KEY     = os.getenv("CLAUDE_API_KEY")
@@ -61,12 +60,12 @@ QDRANT_COLLECTION_NAME = "rag_documents"
 QDRANT_STORAGE_PATH    = Path(os.getenv("QDRANT_STORAGE_PATH", BASE_DIR / "qdrant_db"))
 
 # ── Retriever ──────────────────────────────────────────────────────────
-TOP_K_SEARCH              = 13 
+TOP_K_SEARCH              = 18
 RERANKER_MODEL            = os.getenv("RERANKER_MODEL", "Qwen/Qwen3-Reranker-0.6B")
 
 # ── Retriever thresholds ───────────────────────────────────────────────
 CONFIDENCE_THRESHOLD      = 0.25 
-PER_QUERY_TOP_K           = 8
+PER_QUERY_TOP_K           = 10
 CHUNK_EXPAND_WINDOW       = 0
 SUBQUERY_WEIGHT_THRESHOLD = 0.60
 
@@ -85,8 +84,8 @@ ENTITY_PENALTY            = -0.04
 HIT_COUNT_BOOST           = 0.01
 
 # ── Assembler ──────────────────────────────────────────────────────────
-MAX_CONTEXT_TOKENS        = 11000  
-TOKENS_PER_WORD           = 1.3
+MAX_CONTEXT_TOKENS        = 25000
+TOKENS_PER_WORD           = 1.3 
 
 # ── LLM Generation Settings ────────────────────────────────────────────
 CLEANER_TEMPERATURE       = 0.0    # deterministic signal extraction
@@ -101,8 +100,8 @@ ENABLE_CHECKPOINT_RECOVERY = True
 MAX_PARSE_WORKERS          = 4
 
 # ── Ollama model Settings ──────────────────────────────────────────────
-NUM_CTX           = 18000
-MAX_TOKENS        = 3000 
+NUM_CTX           = 200000
+MAX_TOKENS        = 5000
 
 # ── Layout Model Paths ────────────────────────────────────────────────
 YOLO_MODEL_PATH        = Path(os.getenv("YOLO_MODEL_PATH", BASE_DIR / "ingestion" / "YOLO_Layout_Model" / "doclayout_yolo_docstructbench_imgsz1024.pt"))
