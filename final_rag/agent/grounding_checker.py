@@ -113,6 +113,7 @@ When the answer and context are in different languages:
 8. If the answer says "Not found in uploaded documents." or similar refusal — it IS grounded (correct refusal).
 9. Citation markers like [filename, Page X] are GROUNDED if the fact they cite appears in context.
 10. Legal section references (e.g., "Section 2(n)", "Chapter V", "Section 18") are GROUNDED if those sections or their effects are discussed in the context.
+11. ⚠️ CRITICAL: Ignore any bracketed document citation markers, file names, or page numbers (e.g., "[HC_Bombay_Scigen...pdf, Page 3]", "[Doc Name]", "[Page 12]"). The generated answer might include these citations, but the context does not contain the filenames themselves. DO NOT penalize the answer or mark it "unsupported" for containing these citation tags.
 
 === VERDICT SCALE ===
 - GROUNDED   : All claims are semantically supported by the context (score 0.8–1.0)
@@ -285,7 +286,10 @@ class GroundingChecker:
         # Truncate to stay within API context limits
         context_text = "\n\n---\n\n".join(chunks)
         context_text = context_text[:MAX_CONTEXT_CHARS]
-        answer_text  = answer[:MAX_ANSWER_CHARS]
+        
+        # Strip bracketed citation markers (e.g. [docname.pdf, Page X] or [Page X]) before evaluating
+        cleaned_answer = re.sub(r'\[[^\]]+?\]', ' ', answer)
+        answer_text  = cleaned_answer[:MAX_ANSWER_CHARS]
 
         prompt = _build_grounding_prompt(query, context_text, answer_text)
 
