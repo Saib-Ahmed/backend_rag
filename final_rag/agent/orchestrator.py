@@ -21,8 +21,9 @@ from final_rag.agent.query_cleaner import get_cleaner
 from final_rag.agent.retriever import get_retriever
 from final_rag.agent.assembler import get_assembler
 from final_rag.ingestion.embedder import OllamaEmbedder
-from final_rag.prompts.generator_prompt import get_generator_prompt
+from final_rag.prompts.generator_prompt import get_generator_prompt, has_citations
 from final_rag.agent.claude_client import ClaudeClient
+from final_rag.agent.nvidia_client import NvidiaClient
 import final_rag.config as config
 
 logger = logging.getLogger("agent.orchestrator")
@@ -55,6 +56,7 @@ class Orchestrator:
         self.assembler     = get_assembler()
         self.client        = ollama.Client(host=config.OLLAMA_BASE_URL)
         self.claude_client = ClaudeClient()
+        self.nvidia_client = NvidiaClient()
         logger.info("Orchestrator initialized | generator=%s", MODEL)
 
     # ── Main pipeline entry ────────────────────────────────────────────
@@ -64,6 +66,7 @@ class Orchestrator:
         history:         list[dict] = None,
         active_document: str = None,
         use_claude:      bool = False,
+        model:           str | None = None,
     ) -> Generator[str, None, None]:
 
         total_start = time.perf_counter()
@@ -73,7 +76,7 @@ class Orchestrator:
         try:
             # ── Stage 1: Clean ─────────────────────────────────────────
             t       = time.perf_counter()
-            cleaned = self.cleaner.clean(query, active_document=active_document, use_claude=use_claude)
+            cleaned = self.cleaner.clean(query, active_document=active_document, use_claude=use_claude, model=model)
             times["cleaner"] = round(time.perf_counter() - t, 3)
             logger.info(
                 "[Orchestrator] Cleaned | %.3fs | scope=%s structure=%s specificity=%s",
@@ -111,7 +114,9 @@ class Orchestrator:
             history_str = self._format_history(history)
             t = time.perf_counter()
 
-            yield from self._stream_generate(
+            # Buffer tokens so we can run has_citations() after stream ends (fix #7)
+            answer_buffer: list[str] = []
+            for token in self._stream_generate(
                 original_query    = query,
                 improved_query    = cleaned.improved_query,
                 detected_language = cleaned.detected_language,
@@ -119,8 +124,20 @@ class Orchestrator:
                 history_str       = history_str,
                 stage_start       = t,
                 use_claude        = use_claude,
-            )
+                model             = model,
+            ):
+                answer_buffer.append(token)
+                yield token
             times["generator"] = round(time.perf_counter() - t, 3)
+
+            # Warn if a substantive answer has no inline file citations
+            full_answer = "".join(answer_buffer)
+            if len(full_answer.split()) > 20 and not has_citations(full_answer):
+                logger.warning(
+                    "[Orchestrator] ⚠️  Citation-less answer detected (>20 words, no [file, Page X] markers). "
+                    "LLM skipped citation formatting. query=%r",
+                    query[:120],
+                )
 
             # ── Metadata suffix — sources for frontend citation ────────
             if assembled.sources:
@@ -149,6 +166,7 @@ class Orchestrator:
         history_str:       str,
         stage_start:       float,
         use_claude:        bool = False,
+        model:             str | None = None,
     ) -> Generator[str, None, None]:
         template = get_generator_prompt(assembled.answer_structure)
         prompt   = template.format(
@@ -158,13 +176,14 @@ class Orchestrator:
             context_block     = assembled.context_block,
         )
 
+        display_model = model if model else (config.CLAUDE_MODEL if use_claude else MODEL)
         logger.info(
             "[Orchestrator] Starting stream | model=%s think=False num_ctx=%d max_tokens=%d | use_claude=%s",
-            config.CLAUDE_MODEL if use_claude else MODEL, NUM_CTX, config.CLAUDE_MAX_TOKENS if use_claude else MAX_TOKENS, use_claude,
+            display_model, NUM_CTX, config.CLAUDE_MAX_TOKENS if (use_claude or model == "cloud") else MAX_TOKENS, use_claude or model == "cloud",
         )
 
         try:
-            if use_claude:
+            if use_claude or model == "cloud":
                 stream = self.claude_client.chat_stream(
                     messages    = [{"role": "user", "content": prompt}],
                     temperature = config.GENERATOR_TEMPERATURE,
@@ -183,6 +202,28 @@ class Orchestrator:
                     token_count += 1
                     yield token
                 logger.info("[Orchestrator] [Claude] Stream complete | total_tokens=%d", token_count)
+                return
+
+            elif model in getattr(config, "NVIDIA_MODELS", []):
+                stream = self.nvidia_client.chat_stream(
+                    model       = model,
+                    messages    = [{"role": "user", "content": prompt}],
+                    temperature = config.GENERATOR_TEMPERATURE,
+                    max_tokens  = MAX_TOKENS,
+                )
+                first_token_time = None
+                token_count      = 0
+                for token in stream:
+                    if first_token_time is None:
+                        first_token_time = time.perf_counter()
+                        logger.info(
+                            "[Orchestrator] [Nvidia] 🟢 First token received | "
+                            "time_to_first_token=%.3fs",
+                            first_token_time - stage_start,
+                        )
+                    token_count += 1
+                    yield token
+                logger.info("[Orchestrator] [Nvidia] Stream complete | model=%s | total_tokens=%d", model, token_count)
                 return
 
             stream = self.client.chat(

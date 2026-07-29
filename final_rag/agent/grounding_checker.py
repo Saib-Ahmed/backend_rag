@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import List
 
@@ -43,11 +44,19 @@ NVIDIA_GROUNDING_URL   = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
 GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
-GROUNDING_ENABLED      = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
+# GROUNDING_ENABLED is re-read per call (fix #9) — not cached at module level
 
 # Maximum characters sent to the checker to stay well within context limits
 MAX_ANSWER_CHARS  = 3000
 MAX_CONTEXT_CHARS = 8000
+
+# ── Regex: only strip file-citation markers, not legal references ──────────────
+# Matches patterns like [filename.pdf, Page 3] or [DocName, Page 12]
+# Does NOT strip [Section 2(n)], [Article 7], etc.
+_FILE_CITATION_RE = re.compile(
+    r'\[[^\]]*?(?:\.pdf|\.docx|\.doc|\.txt|page\s*\d+|pg\.?\s*\d+)[^\]]*?\]',
+    re.IGNORECASE,
+)
 
 
 # ── Data model ─────────────────────────────────────────────────────────────────
@@ -111,9 +120,7 @@ When the answer and context are in different languages:
 6. A claim is UNGROUNDED ONLY if its MEANING is genuinely absent from the context, contradicts the context, or is a fabrication with no textual basis whatsoever.
 7. Ignore differences in phrasing, language, script, or formatting — focus purely on factual and semantic faithfulness.
 8. If the answer says "Not found in uploaded documents." or similar refusal — it IS grounded (correct refusal).
-9. Citation markers like [filename, Page X] are GROUNDED if the fact they cite appears in context.
-10. Legal section references (e.g., "Section 2(n)", "Chapter V", "Section 18") are GROUNDED if those sections or their effects are discussed in the context.
-11. ⚠️ CRITICAL: Ignore any bracketed document citation markers, file names, or page numbers (e.g., "[HC_Bombay_Scigen...pdf, Page 3]", "[Doc Name]", "[Page 12]"). The generated answer might include these citations, but the context does not contain the filenames themselves. DO NOT penalize the answer or mark it "unsupported" for containing these citation tags.
+9. Legal section references (e.g., "Section 2(n)", "Chapter V", "Section 18") are GROUNDED if those sections or their effects are discussed in the context.
 
 === VERDICT SCALE ===
 - GROUNDED   : All claims are semantically supported by the context (score 0.8–1.0)
@@ -261,7 +268,9 @@ class GroundingChecker:
         -------
         GroundingResult — always returns (never raises); on failure verdict="UNCHECKED".
         """
-        if not GROUNDING_ENABLED:
+        # Re-read per call so env var changes take effect without server restart (fix #9)
+        grounding_enabled = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
+        if not grounding_enabled:
             logger.info("[GroundingChecker] Grounding disabled via GROUNDING_ENABLED=false")
             return GroundingResult(
                 verdict="UNCHECKED",
@@ -283,13 +292,21 @@ class GroundingChecker:
                 provider="none",
             )
 
-        # Truncate to stay within API context limits
+        # Truncate context at a chunk boundary (not mid-char) (fix #2 context side)
         context_text = "\n\n---\n\n".join(chunks)
-        context_text = context_text[:MAX_CONTEXT_CHARS]
-        
-        # Strip bracketed citation markers (e.g. [docname.pdf, Page X] or [Page X]) before evaluating
-        cleaned_answer = re.sub(r'\[[^\]]+?\]', ' ', answer)
-        answer_text  = cleaned_answer[:MAX_ANSWER_CHARS]
+        if len(context_text) > MAX_CONTEXT_CHARS:
+            cutoff = context_text.rfind('\n', 0, MAX_CONTEXT_CHARS)
+            context_text = context_text[:cutoff] if cutoff != -1 else context_text[:MAX_CONTEXT_CHARS]
+
+        # Strip ONLY file-citation markers — preserves legal refs like [Section 2(n)] (fix #3)
+        cleaned_answer = _FILE_CITATION_RE.sub(' ', answer)
+
+        # Truncate at last complete sentence, not mid-character (fix #2)
+        if len(cleaned_answer) > MAX_ANSWER_CHARS:
+            cutoff = cleaned_answer.rfind('.', 0, MAX_ANSWER_CHARS)
+            answer_text = cleaned_answer[:cutoff + 1] if cutoff != -1 else cleaned_answer[:MAX_ANSWER_CHARS]
+        else:
+            answer_text = cleaned_answer
 
         prompt = _build_grounding_prompt(query, context_text, answer_text)
 
@@ -336,11 +353,25 @@ class GroundingChecker:
             score = float(raw_result.get("score", 0.0))
             score = max(0.0, min(1.0, score))  # clamp to [0, 1]
 
+            # Fix #4: enforce verdict/score consistency so LLM can't return GROUNDED + 0.3
+            if verdict == "GROUNDED" and score < 0.8:
+                score = max(score, 0.8)
+            elif verdict == "PARTIAL" and not (0.4 <= score <= 0.79):
+                score = 0.6
+            elif verdict == "UNGROUNDED" and score > 0.39:
+                score = min(score, 0.39)
+
             unsupported = raw_result.get("unsupported_claims", [])
             if not isinstance(unsupported, list):
                 unsupported = [str(unsupported)]
 
-            reasoning = str(raw_result.get("reasoning", "")).strip() or "No reasoning provided."
+            # Fix #8: clamp reasoning to first sentence only
+            raw_reasoning = str(raw_result.get("reasoning", "")).strip()
+            first_sentence_end = raw_reasoning.find('.')
+            if first_sentence_end != -1 and first_sentence_end < len(raw_reasoning) - 1:
+                reasoning = raw_reasoning[:first_sentence_end + 1]
+            else:
+                reasoning = raw_reasoning or "No reasoning provided."
 
             return GroundingResult(
                 verdict=verdict,
@@ -359,14 +390,19 @@ class GroundingChecker:
             )
 
 
-# ── Singleton factory ──────────────────────────────────────────────────────────
+# ── Thread-safe singleton factory (fix #6) ────────────────────────────────────
 _checker_instance: GroundingChecker | None = None
+_checker_lock = threading.Lock()
 
 
 def get_grounding_checker() -> GroundingChecker:
     global _checker_instance
     if _checker_instance is None:
-        _checker_instance = GroundingChecker()
-        logger.info("[GroundingChecker] Initialized | gemini_model=%s nvidia_model=%s enabled=%s",
-                    GEMINI_GROUNDING_MODEL, NVIDIA_GROUNDING_MODEL, GROUNDING_ENABLED)
+        with _checker_lock:
+            if _checker_instance is None:  # double-checked locking
+                _checker_instance = GroundingChecker()
+                logger.info(
+                    "[GroundingChecker] Initialized | gemini_model=%s nvidia_model=%s",
+                    GEMINI_GROUNDING_MODEL, NVIDIA_GROUNDING_MODEL,
+                )
     return _checker_instance

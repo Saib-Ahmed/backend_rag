@@ -244,6 +244,7 @@ def chat_stream(req: ChatRequest):
                 history         = history,
                 active_document = None,
                 use_claude      = req.use_claude,
+                model           = req.model,
             ):
                 if token.startswith("__METADATA__:"):
                     metadata_chunk = token

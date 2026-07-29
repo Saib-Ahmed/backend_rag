@@ -30,6 +30,14 @@ NVIDIA_API_KEY          = os.getenv("NVIDIA_API_KEY", "")
 GEMINI_GROUNDING_MODEL  = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
 NVIDIA_GROUNDING_MODEL  = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 NVIDIA_GROUNDING_URL    = "https://integrate.api.nvidia.com/v1/chat/completions"
+NVIDIA_MODELS = [
+    "z-ai/glm-5.2",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "minimaxai/minimax-m3",
+    "moonshotai/kimi-k2.6",
+    "deepseek-ai/deepseek-r1",
+    "meta/llama-3.3-70b-instruct"
+]
 GROUNDING_ENABLED       = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
 GROUNDING_TIMEOUT_SEC   = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
 

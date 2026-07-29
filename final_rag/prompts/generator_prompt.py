@@ -2,6 +2,8 @@
 prompts/generator_prompt.py
 """
 
+import re
+
 GENERATOR_PROMPT = """You are an expert Enterprise Document Assistant — precise, professional, and structured.
 Answer the user's question using the provided Knowledge Base Context.
 
@@ -127,3 +129,16 @@ Your Answer:"""
 
 def get_generator_prompt(answer_structure: str) -> str:
     return GENERATOR_PROMPT
+
+
+# ── Citation enforcement helper (Issue #7) ──────────────────────────────────
+# Call this after the answer stream is fully assembled to detect citation-less
+# multi-sentence answers (Qwen3.5 can skip citations on short responses).
+_CITATION_PATTERN = re.compile(
+    r'\[[^\]]*?(?:\.pdf|\.docx|\.doc|page\s*\d+|pg\.?\s*\d+)[^\]]*?\]',
+    re.IGNORECASE,
+)
+
+def has_citations(answer: str) -> bool:
+    """Return True if the answer contains at least one file-citation marker."""
+    return bool(_CITATION_PATTERN.search(answer))

@@ -350,7 +350,8 @@ def chat_stream(req: ChatRequest, request: Request):
             res = requests.post("http://127.0.0.1:8003/chat/stream", json={
                 "query": req.query,
                 "session_id": session_id,
-                "use_claude": req.use_claude
+                "use_claude": req.use_claude or (req.model == "cloud"),
+                "model": req.model
             }, stream=True, timeout=900)
             
             full_answer = []
