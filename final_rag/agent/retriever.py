@@ -250,6 +250,15 @@ class Retriever:
         if not results:
             return []
 
+        MAX_RERANK_CHUNKS = 60
+        if len(results) > MAX_RERANK_CHUNKS:
+            logger.info(
+                "Capping rerank candidates from %d to %d to prevent OOM/latency overhead.",
+                len(results), MAX_RERANK_CHUNKS
+            )
+            results.sort(key=lambda r: r.get("score", 0), reverse=True)
+            results = results[:MAX_RERANK_CHUNKS]
+
         # Use instruction configuration
         instruct_query = (
             f"Instruct: {config.RERANKER_INSTRUCTION}\n"

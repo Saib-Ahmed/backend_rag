@@ -47,8 +47,8 @@ GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
 # GROUNDING_ENABLED is re-read per call (fix #9) — not cached at module level
 
 # Maximum characters sent to the checker to stay well within context limits
-MAX_ANSWER_CHARS  = 3000
-MAX_CONTEXT_CHARS = 8000
+MAX_ANSWER_CHARS  = 12000
+MAX_CONTEXT_CHARS = 35000
 
 # ── Regex: only strip file-citation markers, not legal references ──────────────
 # Matches patterns like [filename.pdf, Page 3] or [DocName, Page 12]
@@ -172,9 +172,10 @@ def _parse_grounding_response(raw: str) -> dict:
 
 # ── Provider implementations ───────────────────────────────────────────────────
 def _check_with_gemini(prompt: str) -> dict:
-    """Call Gemini (primary provider)."""
+    """Call Gemini (primary provider) with retry backoff."""
     from google import genai
     from google.genai import types
+    import time
 
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     if not _is_valid_key(gemini_key):
@@ -183,24 +184,43 @@ def _check_with_gemini(prompt: str) -> dict:
     logger.info("[GroundingChecker] Calling Gemini (%s)...", GEMINI_GROUNDING_MODEL)
     client = genai.Client(api_key=gemini_key)
 
-    response = client.models.generate_content(
-        model=GEMINI_GROUNDING_MODEL,
-        contents=[prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.0,
-        ),
-    )
+    max_retries = 3
+    delay = 1.0
+    last_err = None
 
-    raw_text = response.text
-    result   = _parse_grounding_response(raw_text)
-    logger.info("[GroundingChecker] Gemini responded | verdict=%s score=%s",
-                result.get("verdict"), result.get("score"))
-    return result
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_GROUNDING_MODEL,
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                ),
+            )
+            raw_text = response.text
+            result   = _parse_grounding_response(raw_text)
+            logger.info("[GroundingChecker] Gemini responded | verdict=%s score=%s",
+                        result.get("verdict"), result.get("score"))
+            return result
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                logger.warning(
+                    "[GroundingChecker] Gemini call failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                    attempt, max_retries, e, delay
+                )
+                time.sleep(delay)
+                delay *= 2.0
+            else:
+                logger.error("[GroundingChecker] Gemini call failed permanently after %d attempts.", max_retries)
+
+    raise last_err
 
 
 def _check_with_nvidia_model(prompt: str, model_name: str) -> dict:
-    """Call a specific NVIDIA integrate API model."""
+    """Call a specific NVIDIA integrate API model with retry backoff."""
+    import time
     nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
     if not _is_valid_key(nvidia_key):
         raise ValueError("NVIDIA_API_KEY is not set or is a placeholder.")
@@ -223,19 +243,38 @@ def _check_with_nvidia_model(prompt: str, model_name: str) -> dict:
         "response_format": {"type": "json_object"},
     }
 
-    response = requests.post(
-        NVIDIA_GROUNDING_URL,
-        headers=headers,
-        json=payload,
-        timeout=GROUNDING_TIMEOUT_SEC,
-    )
-    response.raise_for_status()
+    max_retries = 3
+    delay = 1.0
+    last_err = None
 
-    raw_text = response.json()["choices"][0]["message"]["content"]
-    result   = _parse_grounding_response(raw_text)
-    logger.info("[GroundingChecker] NVIDIA %s responded | verdict=%s score=%s",
-                model_name, result.get("verdict"), result.get("score"))
-    return result
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.post(
+                NVIDIA_GROUNDING_URL,
+                headers=headers,
+                json=payload,
+                timeout=GROUNDING_TIMEOUT_SEC,
+            )
+            response.raise_for_status()
+
+            raw_text = response.json()["choices"][0]["message"]["content"]
+            result   = _parse_grounding_response(raw_text)
+            logger.info("[GroundingChecker] NVIDIA %s responded | verdict=%s score=%s",
+                        model_name, result.get("verdict"), result.get("score"))
+            return result
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                logger.warning(
+                    "[GroundingChecker] NVIDIA model %s call failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                    model_name, attempt, max_retries, e, delay
+                )
+                time.sleep(delay)
+                delay *= 2.0
+            else:
+                logger.error("[GroundingChecker] NVIDIA model %s call failed permanently after %d attempts.", model_name, max_retries)
+
+    raise last_err
 
 
 # ── Main checker class ─────────────────────────────────────────────────────────

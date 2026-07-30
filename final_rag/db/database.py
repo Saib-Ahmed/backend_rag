@@ -57,7 +57,10 @@ def get_document_by_hash(file_hash):
 
 def update_document_status(file_name, status):
     if db is None: return
-    db.documents.update_one({"file_name": file_name}, {"$set": {"status": status}})
+    try:
+        db.documents.update_one({"file_name": file_name}, {"$set": {"status": status}})
+    except Exception as e:
+        logger.error(f"Failed to update document status for {file_name} to {status}: {e}")
 
 def get_processing_documents():
     if db is None: return []
@@ -69,8 +72,12 @@ def cleanup_stuck_documents():
 
 def delete_document_record(file_name):
     if db is None: return False
-    res = db.documents.delete_one({"file_name": file_name})
-    return res.deleted_count > 0
+    try:
+        res = db.documents.delete_one({"file_name": file_name})
+        return res.deleted_count > 0
+    except Exception as e:
+        logger.error(f"Failed to delete document record for {file_name}: {e}")
+        return False
 
 def list_documents():
     if db is None: return []

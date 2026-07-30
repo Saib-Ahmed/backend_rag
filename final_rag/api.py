@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -103,12 +104,18 @@ def startup():
 @app.on_event("shutdown")
 def shutdown():
     logger.info("API shutting down, explicitly clearing memory and connections...")
-    global db
+    global db, embedder
     try:
         if db and hasattr(db, "client") and db.client:
             db.client.close()
     except Exception as e:
         logger.error("Error closing Qdrant: %s", e)
+
+    try:
+        if embedder and hasattr(embedder, "close"):
+            embedder.close()
+    except Exception as e:
+        logger.error("Error closing embedder client: %s", e)
 
     import gc
     gc.collect()
@@ -117,6 +124,18 @@ def shutdown():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("CUDA cache cleared.")
+    except ImportError:
+        pass
+
+
+def _clear_gpu_and_gc():
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            logger.info("[Memory] CUDA cache cleared.")
     except ImportError:
         pass
 
@@ -181,16 +200,17 @@ async def upload_document(file: UploadFile = File(...)):
     try:
         logger.info("Starting ingestion for: %s", file.filename)
 
-        parsed_result = doc_parser.parse_bytes(file_bytes, file.filename)
+        parsed_result = await run_in_threadpool(lambda: doc_parser.parse_bytes(file_bytes, file.filename))
         if not parsed_result.success:
             raise Exception(f"Parsing failed: {parsed_result.error}")
 
-        chunks = doc_chunker.chunk(parsed_result)
-        embedder.embed_and_store(chunks)
+        chunks = await run_in_threadpool(lambda: doc_chunker.chunk(parsed_result))
+        await run_in_threadpool(lambda: embedder.embed_and_store(chunks))
 
         update_document_status(file.filename, "ingested")
 
         logger.info("Successfully ingested: %s", file.filename)
+        _clear_gpu_and_gc()
         return {
             "status":      "success",
             "message":     "File successfully uploaded and processed.",
@@ -214,6 +234,7 @@ async def upload_document(file: UploadFile = File(...)):
         except Exception:
             pass
 
+        _clear_gpu_and_gc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -665,16 +686,18 @@ async def preview_parse_document(file: UploadFile = File(...)):
     try:
         # Use a parser with output_dir=None so _save() is a noop
         preview_parser = DocumentParser(output_dir=None)
-        parsed_result = preview_parser.parse_bytes(file_bytes, file.filename, generate_metadata=False)
+        parsed_result = await run_in_threadpool(lambda: preview_parser.parse_bytes(file_bytes, file.filename, generate_metadata=False))
         if not parsed_result.success:
             raise Exception(f"Parsing failed: {parsed_result.error}")
 
+        _clear_gpu_and_gc()
         return {
             "file_name": file.filename,
             "content": parsed_result.markdown,
         }
     except Exception as e:
         logger.error("Preview parse failed for %s: %s", file.filename, e)
+        _clear_gpu_and_gc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -687,14 +710,14 @@ async def replace_document(
     """Delete an existing document and ingest a new one in its place."""
     # Step 1: Delete old document from Qdrant
     try:
-        db.delete_document(old_file_name)
+        await run_in_threadpool(lambda: db.delete_document(old_file_name))
         logger.info("Deleted old vectors for '%s' from Qdrant.", old_file_name)
     except Exception as e:
         logger.error("Failed to delete old vectors for %s: %s", old_file_name, e)
 
     # Step 2: Delete old document DB record
     try:
-        delete_document_record(old_file_name)
+        await run_in_threadpool(lambda: delete_document_record(old_file_name))
         logger.info("Deleted old DB record for '%s'.", old_file_name)
     except Exception as e:
         logger.error("Failed to delete old DB record for %s: %s", old_file_name, e)
@@ -719,27 +742,28 @@ async def replace_document(
     doc_type = Path(file.filename).suffix.lower()
 
     try:
-        insert_document(
+        await run_in_threadpool(lambda: insert_document(
             document_id=doc_id,
             file_name=file.filename,
             doc_type=doc_type,
             file_data=file_bytes,
             status="processing",
-        )
+        ))
     except Exception as e:
         logger.error("Failed to create document placeholder for %s: %s", file.filename, e)
         raise HTTPException(status_code=500, detail="Database error.")
 
     try:
-        parsed_result = doc_parser.parse_bytes(file_bytes, file.filename)
+        parsed_result = await run_in_threadpool(lambda: doc_parser.parse_bytes(file_bytes, file.filename))
         if not parsed_result.success:
             raise Exception(f"Parsing failed: {parsed_result.error}")
 
-        chunks = doc_chunker.chunk(parsed_result)
-        embedder.embed_and_store(chunks)
-        update_document_status(file.filename, "ingested")
+        chunks = await run_in_threadpool(lambda: doc_chunker.chunk(parsed_result))
+        await run_in_threadpool(lambda: embedder.embed_and_store(chunks))
+        await run_in_threadpool(lambda: update_document_status(file.filename, "ingested"))
 
         logger.info("Successfully replaced '%s' with '%s' (%d chunks)", old_file_name, file.filename, len(chunks))
+        _clear_gpu_and_gc()
         return {
             "status": "success",
             "old_deleted": old_file_name,
@@ -749,13 +773,14 @@ async def replace_document(
     except Exception as e:
         logger.error("Replace pipeline failed for %s: %s", file.filename, e)
         try:
-            db.delete_document(file.filename)
+            await run_in_threadpool(lambda: db.delete_document(file.filename))
         except Exception:
             pass
         try:
-            update_document_status(file.filename, "failed")
+            await run_in_threadpool(lambda: update_document_status(file.filename, "failed"))
         except Exception:
             pass
+        _clear_gpu_and_gc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/stats")

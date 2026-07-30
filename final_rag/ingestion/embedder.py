@@ -187,7 +187,7 @@ class OllamaEmbedder:
         return result.indices.tolist(), [float(v) for v in result.values]
 
     # ── Ingest: embed + store in Qdrant ───────────────────────────────
-    def embed_and_store(self, chunks: list[ChunkResult], checkpoint_file=None) -> None:
+    def embed_and_store(self, chunks: list[ChunkResult], checkpoint_file=None, cleanup_model: bool = True) -> None:
         if not chunks:
             logger.warning("No chunks to embed. Skipping.")
             return
@@ -196,60 +196,61 @@ class OllamaEmbedder:
         total       = len(chunks)
         logger.info("Embedding | file=%s | chunks=%d", source_file, total)
 
-        # Step 1 — sort by token_count for batch efficiency
-        indexed  = list(enumerate(chunks))
-        sorted_  = sorted(indexed, key=lambda x: x[1].token_count)
-        orig_idx = [i for i, _ in sorted_]
+        try:
+            # Step 1 — sort by token_count for batch efficiency
+            indexed  = list(enumerate(chunks))
+            sorted_  = sorted(indexed, key=lambda x: x[1].token_count)
+            orig_idx = [i for i, _ in sorted_]
 
-        # Step 2 — build enriched texts + recalculate token counts
-        texts                 = [self._build_embed_input(c) for _, c in sorted_]
-        enriched_token_counts = [_count_tokens(t) for t in texts]
+            # Step 2 — build enriched texts + recalculate token counts
+            texts                 = [self._build_embed_input(c) for _, c in sorted_]
+            enriched_token_counts = [_count_tokens(t) for t in texts]
 
-        # Step 3 — sparse vectors via FastEmbed BM25
-        sparse_results = [self._sparse_embed(t) for t in texts]
+            # Step 3 — sparse vectors via FastEmbed BM25
+            sparse_results = [self._sparse_embed(t) for t in texts]
 
-        # Step 4 — dense vectors via Qwen3 async
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future     = pool.submit(asyncio.run, self._encode_passages_async(texts))
-            dense_vecs = future.result()
+            # Step 4 — dense vectors via Qwen3 async
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future     = pool.submit(asyncio.run, self._encode_passages_async(texts))
+                dense_vecs = future.result()
 
-        # Step 5 — reorder back to original index
-        reordered = [None] * total
-        for j, orig_i in enumerate(orig_idx):
-            indices, values = sparse_results[j]
-            chunk           = chunks[orig_i]
-            reordered[orig_i] = EmbeddedChunk.from_chunk(
-                chunk,
-                dense_vector   = dense_vecs[j],
-                sparse_indices = indices,
-                sparse_values  = values,
-                token_count    = enriched_token_counts[j],
+            # Step 5 — reorder back to original index
+            reordered = [None] * total
+            for j, orig_i in enumerate(orig_idx):
+                indices, values = sparse_results[j]
+                chunk           = chunks[orig_i]
+                reordered[orig_i] = EmbeddedChunk.from_chunk(
+                    chunk,
+                    dense_vector   = dense_vecs[j],
+                    sparse_indices = indices,
+                    sparse_values  = values,
+                    token_count    = enriched_token_counts[j],
+                )
+
+            # Step 6 — upsert in batches
+            points_stored = 0
+            for start in range(0, total, self.batch_size):
+                batch  = reordered[start: start + self.batch_size]
+                points = [self._build_point(ec) for ec in batch if ec is not None]
+                self.db.client.upsert(
+                    collection_name=config.QDRANT_COLLECTION_NAME,
+                    points=points, 
+                )
+                points_stored += len(points)
+                logger.info("  Upserted %d/%d", min(start + self.batch_size, total), total)
+
+            logger.info(
+                "✓ Ingestion complete | file=%s | stored=%d | skipped=%d | all steps passed",
+                source_file, points_stored, total - points_stored,
             )
-
-        # Step 6 — delete ONLY after all embeddings are ready
-        self.db.delete_document(source_file)
-
-        # Step 7 — upsert in batches
-        points_stored = 0
-        for start in range(0, total, self.batch_size):
-            batch  = reordered[start: start + self.batch_size]
-            points = [self._build_point(ec) for ec in batch if ec is not None]
-            self.db.client.upsert(
-                collection_name=config.QDRANT_COLLECTION_NAME,
-                points=points, 
-            )
-            points_stored += len(points)
-            logger.info("  Upserted %d/%d", min(start + self.batch_size, total), total)
-
-        logger.info(
-            "✓ Ingestion complete | file=%s | stored=%d | skipped=%d | all steps passed",
-            source_file, points_stored, total - points_stored,
-        )
+        finally:
+            if cleanup_model:
+                self.cleanup_sparse_model()
 
     # ── Batch ingestion ────────────────────────────────────────────────
     def embed_batch(self, chunks_by_file: dict[str, list[ChunkResult]]) -> None:
         for file_name, chunks in chunks_by_file.items():
-            self.embed_and_store(chunks)
+            self.embed_and_store(chunks, cleanup_model=False)
         total = sum(len(c) for c in chunks_by_file.values())
         logger.info(
             "Batch complete | files=%d | total_chunks=%d",
@@ -264,6 +265,14 @@ class OllamaEmbedder:
             logger.info("Sparse model cleaned up")
         except Exception as e:
             logger.warning("Cleanup failed: %s", e)
+
+    def close(self) -> None:
+        try:
+            if hasattr(self, "_query_client") and self._query_client:
+                self._query_client.close()
+                logger.info("Ollama query client closed.")
+        except Exception as e:
+            logger.warning("Failed to close Ollama client: %s", e)
 
     # ── Query embedding ────────────────────────────────────────────────
     def embed_query(self, query: str) -> tuple[list[float], Dict[int, float]]:
