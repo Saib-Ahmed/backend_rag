@@ -47,8 +47,8 @@ GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
 # GROUNDING_ENABLED is re-read per call (fix #9) — not cached at module level
 
 # Maximum characters sent to the checker to stay well within context limits
-MAX_ANSWER_CHARS  = 12000
-MAX_CONTEXT_CHARS = 35000
+MAX_ANSWER_CHARS  = 15000
+MAX_CONTEXT_CHARS = 60000
 
 # ── Regex: only strip file-citation markers, not legal references ──────────────
 # Matches patterns like [filename.pdf, Page 3] or [DocName, Page 12]
@@ -65,6 +65,7 @@ class GroundingResult:
     verdict:            str          = "UNCHECKED"   # GROUNDED | PARTIAL | UNGROUNDED | UNCHECKED
     score:              float        = 0.0
     unsupported_claims: List[str]    = field(default_factory=list)
+    claims:             List[dict]   = field(default_factory=list)
     reasoning:          str          = "Grounding check was not performed."
     provider:           str          = "none"
 
@@ -73,6 +74,7 @@ class GroundingResult:
             "verdict":            self.verdict,
             "score":              self.score,
             "unsupported_claims": self.unsupported_claims,
+            "claims":             self.claims,
             "reasoning":          self.reasoning,
             "provider":           self.provider,
         }
@@ -97,7 +99,9 @@ def _build_grounding_prompt(query: str, context_text: str, answer: str) -> str:
     """
     return f"""You are an expert multilingual faithfulness evaluator for a Retrieval-Augmented Generation (RAG) system.
 
-TASK: Determine whether the GENERATED ANSWER is faithful to and fully supported by the PROVIDED CONTEXT.
+TASK: 
+1. Determine whether the GENERATED ANSWER is faithful to and fully supported by the PROVIDED CONTEXT.
+2. Break down the GENERATED ANSWER statement-by-statement into individual claims and evaluate EACH statement against the context.
 
 === USER QUESTION ===
 {query}
@@ -127,13 +131,21 @@ When the answer and context are in different languages:
 - PARTIAL    : Most claims are supported but 1–3 genuinely unsupported claims exist (score 0.4–0.79)
 - UNGROUNDED : Multiple or significant claims have NO semantic basis in the context (score 0.0–0.39)
 
-=== OUTPUT ===
+=== OUTPUT FORMAT ===
 Respond with ONLY this JSON object (no markdown, no extra text):
 {{
   "verdict": "GROUNDED" | "PARTIAL" | "UNGROUNDED",
   "score": <float 0.0 to 1.0>,
-  "unsupported_claims": ["claim1 in English", "claim2 in English"],
-  "reasoning": "<one sentence explanation in English>"
+  "unsupported_claims": ["unsupported statement 1 in English", "unsupported statement 2 in English"],
+  "reasoning": "<one sentence overall explanation>",
+  "claims": [
+    {{
+      "statement": "<exact or clean statement sentence from the generated answer>",
+      "verdict": "GROUNDED" | "PARTIAL" | "UNGROUNDED",
+      "key_citation_line": "<exact or close text quote snippet from the context chunk supporting/refuting this statement>",
+      "reasoning": "<one sentence rationale for this specific statement>"
+    }}
+  ]
 }}"""
 
 
@@ -196,6 +208,7 @@ def _check_with_gemini(prompt: str) -> dict:
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.0,
+                    max_output_tokens=4096,
                 ),
             )
             raw_text = response.text
@@ -236,7 +249,7 @@ def _check_with_nvidia_model(prompt: str, model_name: str) -> dict:
     payload = {
         "model":           model_name,
         "messages":        [{"role": "user", "content": prompt}],
-        "max_tokens":      1024,
+        "max_tokens":      4096,
         "temperature":     0.0,
         "top_p":           1.0,
         "stream":          False,
@@ -404,6 +417,10 @@ class GroundingChecker:
             if not isinstance(unsupported, list):
                 unsupported = [str(unsupported)]
 
+            claims = raw_result.get("claims", [])
+            if not isinstance(claims, list):
+                claims = []
+
             # Fix #8: clamp reasoning to first sentence only
             raw_reasoning = str(raw_result.get("reasoning", "")).strip()
             first_sentence_end = raw_reasoning.find('.')
@@ -416,6 +433,7 @@ class GroundingChecker:
                 verdict=verdict,
                 score=score,
                 unsupported_claims=unsupported,
+                claims=claims,
                 reasoning=reasoning,
                 provider=provider_used,
             )

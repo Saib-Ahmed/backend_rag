@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import uuid
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
@@ -861,8 +861,10 @@ def health_check():
 
 # ── POST /verify_claim ──────────────────────────────────────────────────
 class VerifyClaimRequest(BaseModel):
-    claim: str
-    source_chunk: str
+    claim: Optional[str] = None
+    answer: Optional[str] = None
+    source_chunk: Optional[str] = None
+    chunks: Optional[List[str]] = None
     query: str = ""
 
 @app.post("/verify_claim")
@@ -870,19 +872,24 @@ class VerifyClaimRequest(BaseModel):
 def verify_claim(req: VerifyClaimRequest):
     if not grounding_checker:
         raise HTTPException(status_code=500, detail="Grounding checker not initialized")
+    
+    answer_text = req.answer or req.claim or ""
+    chunk_list = req.chunks or ([req.source_chunk] if req.source_chunk else [])
+
     try:
         gr = grounding_checker.check(
-            answer=req.claim,
-            chunks=[req.source_chunk],
+            answer=answer_text,
+            chunks=chunk_list,
             query=req.query
         )
         return gr.to_dict()
     except Exception as e:
-        logger.error("Single claim verification failed: %s", e)
+        logger.error("Verification failed: %s", e)
         return {
             "verdict": "UNCHECKED",
             "score": 0.0,
             "unsupported_claims": [],
+            "claims": [],
             "reasoning": str(e),
             "provider": "none"
         }

@@ -75,6 +75,7 @@ class NvidiaClient:
             if not resp.ok:
                 logger.error("[NvidiaClient] generate() HTTP %s | %s", resp.status_code, resp.text[:300])
             resp.raise_for_status()
+            resp.encoding = 'utf-8'
             data = resp.json()
             text = data["choices"][0]["message"]["content"].strip()
             logger.info("[NvidiaClient] generate() succeeded | model=%s", model)
@@ -113,6 +114,7 @@ class NvidiaClient:
                 if not resp.ok:
                     logger.error("[NvidiaClient] chat_stream() HTTP %s | %s", resp.status_code, resp.text[:300])
                 resp.raise_for_status()
+                resp.encoding = 'utf-8'
 
                 for raw_line in resp.iter_lines(decode_unicode=True):
                     if not raw_line:
