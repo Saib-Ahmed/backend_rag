@@ -1,8 +1,13 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# ── Load environment variables ─────────────────────────────────────────
+BASE_DIR       = Path(__file__).parent
+load_dotenv(BASE_DIR / ".env")
+load_dotenv()
 
 # ── Paths ────────────────────────────────────────────────────────────── 
-BASE_DIR       = Path(__file__).parent
 DOC_INPUT_DIR  = BASE_DIR / "doc_input"
 MD_OUTPUT_DIR  = Path(os.getenv("MD_OUTPUT_DIR", BASE_DIR / "md_output"))
 
@@ -32,14 +37,12 @@ NVIDIA_GROUNDING_MODEL  = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 NVIDIA_GROUNDING_URL    = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_MODELS = [
     "z-ai/glm-5.2",
-    "nvidia/nemotron-3-ultra-550b-a55b",
+    "meta/llama-3.3-70b-instruct",
+    "mistralai/mistral-large-2-instruct",
     "minimaxai/minimax-m3",
-    "moonshotai/kimi-k2.6",
-    "deepseek-ai/deepseek-r1",
-    "meta/llama-3.3-70b-instruct"
 ]
 GROUNDING_ENABLED       = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
-GROUNDING_TIMEOUT_SEC   = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
+GROUNDING_TIMEOUT_SEC   = int(os.getenv("GROUNDING_TIMEOUT_SEC", "90"))
 
 # ── Chunker ──────────────────────────────────────────────────────────── 
 CHUNK_SIZE         = 650

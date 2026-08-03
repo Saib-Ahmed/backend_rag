@@ -43,7 +43,7 @@ logger = logging.getLogger("agent.grounding_checker")
 NVIDIA_GROUNDING_URL   = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
-GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "30"))
+GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "90"))
 # GROUNDING_ENABLED is re-read per call (fix #9) — not cached at module level
 
 # Maximum characters sent to the checker to stay well within context limits
@@ -256,7 +256,7 @@ def _check_with_nvidia_model(prompt: str, model_name: str) -> dict:
         "response_format": {"type": "json_object"},
     }
 
-    max_retries = 3
+    max_retries = 2
     delay = 1.0
     last_err = None
 
@@ -375,8 +375,9 @@ class GroundingChecker:
             
             fallbacks = [
                 ("gemini", lambda: _check_with_gemini(prompt)),
+                ("nvidia_meta_llama-3.3-70b-instruct", lambda: _check_with_nvidia_model(prompt, "meta/llama-3.3-70b-instruct")),
+                ("nvidia_mistralai_mistral-large-2-instruct", lambda: _check_with_nvidia_model(prompt, "mistralai/mistral-large-2-instruct")),
                 ("nvidia_minimaxai_minimax-m3", lambda: _check_with_nvidia_model(prompt, "minimaxai/minimax-m3")),
-                ("nvidia_nvidia_nemotron-3-ultra-550b-a55b", lambda: _check_with_nvidia_model(prompt, "nvidia/nemotron-3-ultra-550b-a55b"))
             ]
             
             for provider_name, checker_func in fallbacks:
