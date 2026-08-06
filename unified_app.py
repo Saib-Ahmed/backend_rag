@@ -421,6 +421,11 @@ def backup_markdown_file(filename: str, rag_version: str):
                 backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}{v_suffix}_{ts}.md")
             shutil.copy2(md_source, backup_dest)
             logging.info(f"Backed up md to: {backup_dest}")
+        else:
+            logging.warning(f"No .md source file found for backup of {filename}")
+    except Exception as backup_err:
+        logging.error(f"Failed to create backup for {filename}: {backup_err}")
+
 def backup_pdf_file(filename: str, file_content: bytes) -> str:
     """Save original PDF to backup_pdf directory and return the backup file path."""
     try:
