@@ -676,6 +676,38 @@ def get_document_pdf_route(file_name: str):
                                 )
             except Exception as dir_err:
                 logging.warning(f"Error reading directory {d} for PDF search: {dir_err}")
+
+        # ── Fallback to S3 bucket streaming & caching ──
+        try:
+            from s3_uploader import download_pdf_from_s3
+            for target in search_names:
+                s3_key = f"pdf_storage/{target}"
+                s3_stream = download_pdf_from_s3(s3_key)
+                if s3_stream:
+                    try:
+                        os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
+                        local_path = os.path.join(BACKUP_PDF_DIR, target)
+                        pdf_data = s3_stream.read()
+                        with open(local_path, "wb") as local_f:
+                            local_f.write(pdf_data)
+                        logging.info(f"Successfully cached S3 file locally at: {local_path}")
+                        return FileResponse(
+                            path=local_path,
+                            media_type="application/pdf",
+                            filename=target,
+                            headers={"Content-Disposition": f"inline; filename=\"{target}\""}
+                        )
+                    except Exception as cache_err:
+                        logging.warning(f"Could not cache S3 stream locally: {cache_err}")
+                        import io
+                        return StreamingResponse(
+                            io.BytesIO(pdf_data),
+                            media_type="application/pdf",
+                            headers={"Content-Disposition": f"inline; filename=\"{target}\""}
+                        )
+        except Exception as s3_err:
+            logging.error(f"S3 fallback resolution failed: {s3_err}")
+
         raise HTTPException(status_code=404, detail=f"PDF file '{file_name}' not found")
     except HTTPException:
         raise

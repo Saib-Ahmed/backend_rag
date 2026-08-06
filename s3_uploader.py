@@ -88,6 +88,24 @@ class RunPodS3Uploader:
             logger.error(f"Unexpected error uploading {local_path} to S3: {e}")
             return False
 
+    def download_file_to_stream(self, s3_key: str):
+        """Returns a binary stream of the S3 object if it exists."""
+        if not self.s3_client:
+            return None
+        try:
+            logger.info(f"Fetching from S3: s3://{self.bucket_name}/{s3_key}")
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=s3_key)
+            return response['Body']
+        except ClientError as e:
+            if e.response['Error']['Code'] == "NoSuchKey":
+                logger.warning(f"Key {s3_key} does not exist in S3.")
+                return None
+            logger.error(f"S3 get_object error for {s3_key}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected S3 error for {s3_key}: {e}")
+            return None
+
 
 # Global helper instance
 _uploader_instance = None
@@ -107,3 +125,9 @@ def upload_pdf_to_s3(local_pdf_path: str, s3_key: str = None) -> bool:
     if uploader and uploader.is_configured():
         return uploader.upload_file(local_pdf_path, s3_key)
     return False
+
+def download_pdf_from_s3(s3_key: str):
+    uploader = get_s3_uploader()
+    if uploader and uploader.is_configured():
+        return uploader.download_file_to_stream(s3_key)
+    return None
