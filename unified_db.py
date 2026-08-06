@@ -7,21 +7,26 @@ import uuid
 from pymongo import MongoClient
 import logging
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 logger = logging.getLogger("unified_db")
 MONGO_URI = os.environ.get("MONGO_URI")
-if not MONGO_URI:
-    raise RuntimeError("MONGO_URI environment variable is not set")
 
-try:
-    import certifi
-    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-    db = client.rag_database
-    # Check connection
-    client.admin.command('ping')
-except Exception as e:
-    logger.error(f"Failed to connect to MongoDB: {e}")
+if not MONGO_URI:
+    logger.warning("MONGO_URI environment variable is not set - MongoDB operations will be disabled")
     db = None
+else:
+    try:
+        import certifi
+        client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+        db = client.rag_database
+        # Check connection
+        client.admin.command('ping')
+    except Exception as e:
+        logger.error(f"Failed to connect to MongoDB: {e}")
+        db = None
 
 def get_db_connection():
     return db
@@ -191,8 +196,11 @@ def save_document_metadata(
     creation_date: str = "",
     rag_version: str = "version1",
     file_hash: Optional[str] = None,
+    pdf_path: Optional[str] = None,
+    pdf_backup_path: Optional[str] = None,
+    s3_key: Optional[str] = None,
 ):
-    """Save or update document metadata in MongoDB with version history tracking."""
+    """Save or update document metadata in MongoDB with version history tracking and PDF storage pointers."""
     if db is None:
         return
     
@@ -221,6 +229,13 @@ def save_document_metadata(
         }
         if file_hash:
             doc["file_hash"] = file_hash
+        if pdf_path:
+            doc["pdf_path"] = pdf_path
+        if pdf_backup_path:
+            doc["pdf_backup_path"] = pdf_backup_path
+        if s3_key:
+            doc["s3_key"] = s3_key
+
         db.document_metadata.update_one(
             {"file_name": file_name},
             {"$set": doc}
@@ -239,6 +254,13 @@ def save_document_metadata(
         }
         if file_hash:
             doc["file_hash"] = file_hash
+        if pdf_path:
+            doc["pdf_path"] = pdf_path
+        if pdf_backup_path:
+            doc["pdf_backup_path"] = pdf_backup_path
+        if s3_key:
+            doc["s3_key"] = s3_key
+
         db.document_metadata.insert_one(doc)
         
     logger.info(f"Saved metadata for '{file_name}' (updates: {update_count if existing else 0})")
@@ -291,6 +313,9 @@ def update_document_metadata(
     creation_date: Optional[str] = None,
     ingestion_date: Optional[str] = None,
     rag_version: Optional[str] = None,
+    pdf_path: Optional[str] = None,
+    pdf_backup_path: Optional[str] = None,
+    s3_key: Optional[str] = None,
 ) -> bool:
     """Update fields for a document's metadata in MongoDB."""
     if db is None:
@@ -307,6 +332,12 @@ def update_document_metadata(
         updated_fields["creation_date"] = creation_date
     if rag_version is not None:
         updated_fields["rag_version"] = rag_version
+    if pdf_path is not None:
+        updated_fields["pdf_path"] = pdf_path
+    if pdf_backup_path is not None:
+        updated_fields["pdf_backup_path"] = pdf_backup_path
+    if s3_key is not None:
+        updated_fields["s3_key"] = s3_key
         
     if ingestion_date is not None:
         try:

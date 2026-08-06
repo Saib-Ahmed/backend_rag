@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Query, Backg
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uuid
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 import requests
 import tempfile
 import subprocess
@@ -91,9 +91,12 @@ msme_upload_tasks = TTLCache(maxsize=1000, ttl=3600)
 RUNPOD_VOLUME = "/runpod-volume"
 if os.path.exists(RUNPOD_VOLUME) and os.access(RUNPOD_VOLUME, os.W_OK):
     BACKUP_MD_DIR = os.path.join(RUNPOD_VOLUME, "backup_markdown")
+    BACKUP_PDF_DIR = os.path.join(RUNPOD_VOLUME, "backup_pdf")
 else:
     BACKUP_MD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_markdown")
+    BACKUP_PDF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_pdf")
 os.makedirs(BACKUP_MD_DIR, exist_ok=True)
+os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
 
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -418,10 +421,17 @@ def backup_markdown_file(filename: str, rag_version: str):
                 backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}{v_suffix}_{ts}.md")
             shutil.copy2(md_source, backup_dest)
             logging.info(f"Backed up md to: {backup_dest}")
-        else:
-            logging.warning(f"No .md source file found for backup of {filename}")
-    except Exception as backup_err:
-        logging.error(f"Failed to create backup for {filename}: {backup_err}")
+def backup_pdf_file(filename: str, file_content: bytes) -> str:
+    """Save original PDF to backup_pdf directory and return the backup file path."""
+    try:
+        pdf_dest = os.path.join(BACKUP_PDF_DIR, filename)
+        with open(pdf_dest, "wb") as f:
+            f.write(file_content)
+        logging.info(f"Backed up PDF to: {pdf_dest}")
+        return pdf_dest
+    except Exception as err:
+        logging.error(f"Failed to backup PDF {filename}: {err}")
+        return ""
 
 def process_upload_background(task_id: str, filename: str, file_content: bytes, content_type: str, buildGraph: bool, rag_version: str,
                                doc_type: str = "PDF", source: str = "public", source_description: str = "", creation_date: str = ""):
@@ -449,6 +459,19 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
             else:
                 upload_tasks[task_id] = {"status": "success", "data": data}
 
+                # ── Save PDF to backup_pdf ──
+                pdf_backup_path = backup_pdf_file(filename, file_content)
+
+                # ── Upload PDF to RunPod S3 network storage ──
+                s3_key = f"pdf_storage/{filename}"
+                s3_uploaded = False
+                try:
+                    from s3_uploader import upload_pdf_to_s3
+                    if pdf_backup_path:
+                        s3_uploaded = upload_pdf_to_s3(pdf_backup_path, s3_key)
+                except Exception as s3_err:
+                    logging.warning(f"S3 upload optional step skipped/failed: {s3_err}")
+
                 # ── Save metadata to MongoDB ──
                 try:
                     import hashlib
@@ -461,6 +484,9 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                         creation_date=creation_date,
                         rag_version=rag_version,
                         file_hash=file_hash,
+                        pdf_path=f"doc_input/{filename}" if rag_version in ["v2", "version2"] else f"pdf_storage/{filename}",
+                        pdf_backup_path=pdf_backup_path,
+                        s3_key=s3_key if s3_uploaded else None,
                     )
                 except Exception as meta_err:
                     logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")
@@ -595,6 +621,31 @@ def get_document_content_route(file_name: str, rag_version: str = Query("version
         raise HTTPException(status_code=502, detail=f"Backend proxy error: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
+
+@app.get("/documents/{file_name}/pdf")
+def get_document_pdf_route(file_name: str):
+    try:
+        from pathlib import Path
+        base_dir = Path(__file__).parent.resolve()
+        candidates = [
+            base_dir / "backup_pdf" / file_name,
+            base_dir / "final_rag" / "doc_input" / file_name,
+            base_dir / "final_rag" / "pdf_storage" / file_name,
+            base_dir / "RAG_system" / "pdf_storage" / file_name,
+        ]
+        for p in candidates:
+            if p.exists() and p.is_file():
+                return FileResponse(
+                    path=str(p),
+                    media_type="application/pdf",
+                    filename=file_name,
+                    headers={"Content-Disposition": f"inline; filename=\"{file_name}\""}
+                )
+        raise HTTPException(status_code=404, detail=f"PDF file '{file_name}' not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class DocumentContentUpdateUnified(BaseModel):
     content: str

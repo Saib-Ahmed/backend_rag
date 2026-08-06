@@ -25,7 +25,7 @@ def create_tables():
         except Exception as e:
             logger.error(f"Error creating document indexes: {e}")
 
-def insert_document(document_id, file_name, doc_type, file_data, status="processing", file_hash=None):
+def insert_document(document_id, file_name, doc_type, file_data, status="processing", file_hash=None, pdf_path=None, s3_key=None):
     if db is None: return "dummy_id"
     
     if not file_hash and file_data:
@@ -42,6 +42,11 @@ def insert_document(document_id, file_name, doc_type, file_data, status="process
         "upload_time": datetime.utcnow(),
         "file_hash": file_hash
     }
+    if pdf_path:
+        doc["pdf_path"] = pdf_path
+    if s3_key:
+        doc["s3_key"] = s3_key
+
     db.documents.insert_one(doc)
     return document_id
 

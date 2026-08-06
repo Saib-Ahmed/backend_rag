@@ -73,6 +73,8 @@ class EmbeddedChunk:
     doc_id:          str             = ""
     chunk_id:        str             = ""
     source_file:     str             = ""
+    source_pdf:      str             = ""
+    pdf_path:        str             = ""
     filename_tokens: list[str]       = field(default_factory=list)
     doc_year:        str             = ""
     has_tables:      bool            = False
@@ -377,6 +379,8 @@ class OllamaEmbedder:
                 "doc_id":         ec.doc_id,
                 "chunk_id":       ec.chunk_id,
                 "source_file":    ec.source_file,
+                "source_pdf":     ec.source_pdf or ec.source_file,
+                "pdf_path":       ec.pdf_path,
                 "filename_tokens": ec.filename_tokens,
                 "doc_year":       ec.doc_year,
                 "has_tables":     ec.has_tables,

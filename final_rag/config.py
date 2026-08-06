@@ -8,11 +8,13 @@ load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 
 # ── Paths ────────────────────────────────────────────────────────────── 
-DOC_INPUT_DIR  = BASE_DIR / "doc_input"
-MD_OUTPUT_DIR  = Path(os.getenv("MD_OUTPUT_DIR", BASE_DIR / "md_output"))
+DOC_INPUT_DIR   = BASE_DIR / "doc_input"
+MD_OUTPUT_DIR   = Path(os.getenv("MD_OUTPUT_DIR", BASE_DIR / "md_output"))
+PDF_STORAGE_DIR = Path(os.getenv("PDF_STORAGE_DIR", BASE_DIR / "pdf_storage"))
 
 os.makedirs(DOC_INPUT_DIR, exist_ok=True)
 os.makedirs(MD_OUTPUT_DIR, exist_ok=True) 
+os.makedirs(PDF_STORAGE_DIR, exist_ok=True) 
 
 # local: "http://localhost:11434"
 

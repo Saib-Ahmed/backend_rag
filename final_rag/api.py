@@ -16,7 +16,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -612,6 +612,25 @@ def get_document_content(file_name: str):
         raise HTTPException(status_code=404, detail="Content not found")
     content = md_path.read_text(encoding="utf-8")
     return {"file_name": file_name, "content": content}
+
+@app.get("/documents/{file_name}/pdf")
+@app.get("/api/documents/{file_name}/pdf")
+def get_document_pdf(file_name: str):
+    # Check doc_input, pdf_storage, and backup_pdf
+    candidates = [
+        config.DOC_INPUT_DIR / file_name,
+        config.PDF_STORAGE_DIR / file_name,
+        Path(__file__).parent.parent / "backup_pdf" / file_name,
+    ]
+    for p in candidates:
+        if p.exists() and p.is_file():
+            return FileResponse(
+                path=str(p),
+                media_type="application/pdf",
+                filename=file_name,
+                headers={"Content-Disposition": f"inline; filename=\"{file_name}\""}
+            )
+    raise HTTPException(status_code=404, detail=f"PDF file for '{file_name}' not found")
 
 @app.put("/api/documents/{file_name}/content")
 def update_document_content(file_name: str, payload: DocumentContentUpdate):

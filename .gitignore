@@ -7,11 +7,18 @@ env/
 **/.env.*
 
 # Document processing output and temp files
+# Scratch scripts and temp debug files
+scratch/
 .tmp.driveupload/
 .tmp.drivedownload/
 RAG_system/tmp/
 md_output/
 final_rag/md_output/
+final_rag/doc_input/
+final_rag/pdf_storage/
+RAG_system/pdf_storage/
+backup_markdown/
+backup_pdf/
 __pycache__/
 *.pyc
 msme_sessions/

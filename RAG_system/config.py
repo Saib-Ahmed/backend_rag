@@ -9,7 +9,9 @@ os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
 
 BASE_DIR = Path(__file__).parent
 RAG_TMP_DIR = Path(os.getenv("RAG_TMP_DIR", BASE_DIR / "tmp"))
+PDF_STORAGE_DIR = Path(os.getenv("PDF_STORAGE_DIR", BASE_DIR / "pdf_storage"))
 os.makedirs(RAG_TMP_DIR, exist_ok=True)
+os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
 
 
 # Ollama Model Configuration
