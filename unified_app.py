@@ -167,7 +167,7 @@ def require_auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
 
 # ── Global Auth Enforcement Middleware ────────────────────────────────────────────
 # Paths that are accessible without a JWT token
-_PUBLIC_PATHS = {"/ping", "/stats", "/docs", "/openapi.json", "/redoc"}
+_PUBLIC_PATHS = {"/ping", "/stats", "/docs", "/openapi.json", "/redoc", "/debug/pdf-paths"}
 
 @app.middleware("http")
 async def enforce_authentication(request: Request, call_next):
@@ -681,6 +681,37 @@ def get_document_pdf_route(file_name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/pdf-paths")
+def debug_pdf_paths():
+    from pathlib import Path
+    base_dir = Path(__file__).parent.resolve()
+    directories = {
+        "BACKUP_PDF_DIR": BACKUP_PDF_DIR,
+        "backup_pdf": str(base_dir / "backup_pdf"),
+        "doc_input": str(base_dir / "final_rag" / "doc_input"),
+        "final_rag_pdf_storage": str(base_dir / "final_rag" / "pdf_storage"),
+        "RAG_system_pdf_storage": str(base_dir / "RAG_system" / "pdf_storage"),
+    }
+    results = {}
+    for name, path_str in directories.items():
+        p = Path(path_str)
+        exists = p.exists()
+        is_dir = p.is_dir() if exists else False
+        files = []
+        if exists and is_dir:
+            try:
+                files = os.listdir(p)
+            except Exception as e:
+                files = [f"Error listing: {e}"]
+        results[name] = {
+            "path": path_str,
+            "exists": exists,
+            "is_dir": is_dir,
+            "file_count": len(files),
+            "files": files[:100]  # Show up to 100 files for debugging
+        }
+    return results
 
 class DocumentContentUpdateUnified(BaseModel):
     content: str
