@@ -637,21 +637,45 @@ def get_document_pdf_route(file_name: str):
     try:
         from pathlib import Path
         base_dir = Path(__file__).parent.resolve()
-        candidates = [
-            Path(BACKUP_PDF_DIR) / file_name,
-            base_dir / "backup_pdf" / file_name,
-            base_dir / "final_rag" / "doc_input" / file_name,
-            base_dir / "final_rag" / "pdf_storage" / file_name,
-            base_dir / "RAG_system" / "pdf_storage" / file_name,
+        import os
+        search_names = {
+            file_name,
+            file_name.replace(" ", "_"),
+            file_name.replace("_", " "),
+            file_name.replace("..", ".")
+        }
+        extra_variations = list(search_names)
+        for name in extra_variations:
+            search_names.add(name.replace("..", "."))
+            search_names.add(name.replace(" ", "_"))
+            search_names.add(name.replace("_", " "))
+
+        directories = [
+            Path(BACKUP_PDF_DIR),
+            base_dir / "backup_pdf",
+            base_dir / "final_rag" / "doc_input",
+            base_dir / "final_rag" / "pdf_storage",
+            base_dir / "RAG_system" / "pdf_storage",
         ]
-        for p in candidates:
-            if p.exists() and p.is_file():
-                return FileResponse(
-                    path=str(p),
-                    media_type="application/pdf",
-                    filename=file_name,
-                    headers={"Content-Disposition": f"inline; filename=\"{file_name}\""}
-                )
+        for d in directories:
+            if not d.exists():
+                continue
+            try:
+                dir_files = os.listdir(d)
+                for f in dir_files:
+                    f_lower = f.lower()
+                    for target in search_names:
+                        if f_lower == target.lower():
+                            target_path = d / f
+                            if target_path.is_file():
+                                return FileResponse(
+                                    path=str(target_path),
+                                    media_type="application/pdf",
+                                    filename=f,
+                                    headers={"Content-Disposition": f"inline; filename=\"{f}\""}
+                                )
+            except Exception as dir_err:
+                logging.warning(f"Error reading directory {d} for PDF search: {dir_err}")
         raise HTTPException(status_code=404, detail=f"PDF file '{file_name}' not found")
     except HTTPException:
         raise
