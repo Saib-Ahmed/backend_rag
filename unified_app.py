@@ -177,9 +177,14 @@ async def enforce_authentication(request: Request, call_next):
     if request.method == "OPTIONS" or path in _PUBLIC_PATHS or path.startswith("/auth/"):
         return await call_next(request)
     auth_header = request.headers.get("x-jwt-authorization") or request.headers.get("Authorization", "")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    elif path.endswith("/pdf"):
+        token = request.query_params.get("token")
+
+    if not token:
         return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-    token = auth_header.split(" ", 1)[1].strip()
     payload = decode_access_token(token)
     if not payload:
         return JSONResponse(status_code=401, content={"detail": "Invalid or expired token"})
