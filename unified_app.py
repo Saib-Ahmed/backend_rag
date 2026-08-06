@@ -638,6 +638,7 @@ def get_document_pdf_route(file_name: str):
         from pathlib import Path
         base_dir = Path(__file__).parent.resolve()
         candidates = [
+            Path(BACKUP_PDF_DIR) / file_name,
             base_dir / "backup_pdf" / file_name,
             base_dir / "final_rag" / "doc_input" / file_name,
             base_dir / "final_rag" / "pdf_storage" / file_name,
