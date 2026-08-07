@@ -689,9 +689,18 @@ def get_document_pdf_route(file_name: str):
         # ── Fallback to S3 bucket streaming & caching ──
         try:
             from s3_uploader import download_pdf_from_s3
+            import urllib.parse
             for target in search_names:
-                s3_key = f"pdf_storage/{target}"
-                s3_stream = download_pdf_from_s3(s3_key)
+                # Try raw/plain key first, then URL-encoded key (to support URL-encoded names like %20, %26)
+                s3_keys = [
+                    f"pdf_storage/{target}",
+                    f"pdf_storage/{urllib.parse.quote(target)}"
+                ]
+                s3_stream = None
+                for key in s3_keys:
+                    s3_stream = download_pdf_from_s3(key)
+                    if s3_stream:
+                        break
                 if s3_stream:
                     try:
                         os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
