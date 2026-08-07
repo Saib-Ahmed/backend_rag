@@ -632,12 +632,16 @@ def get_document_content_route(file_name: str, rag_version: str = Query("version
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.get("/documents/{file_name}/pdf")
-def get_document_pdf_route(file_name: str):
+def get_document_pdf_route(file_name: str, page: int = Query(None)):
     try:
         from pathlib import Path
         base_dir = Path(__file__).parent.resolve()
         import os
         import urllib.parse
+        import fitz
+        import io
+        from fastapi.responses import StreamingResponse
+
         search_names = {
             file_name,
             file_name.replace(" ", "_"),
@@ -672,6 +676,31 @@ def get_document_pdf_route(file_name: str):
                         if f_lower == target.lower():
                             target_path = d / f
                             if target_path.is_file():
+                                # If page parameter is supplied, extract and return only that page
+                                if page is not None and page > 0:
+                                    try:
+                                        doc = fitz.open(str(target_path))
+                                        page_num = page - 1  # convert to 0-indexed
+                                        if 0 <= page_num < len(doc):
+                                            new_doc = fitz.open()
+                                            new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                                            pdf_bytes = new_doc.write()
+                                            new_doc.close()
+                                            doc.close()
+                                            return StreamingResponse(
+                                                io.BytesIO(pdf_bytes),
+                                                media_type="application/pdf",
+                                                headers={"Content-Disposition": f"inline; filename=\"page_{page}_{f}\""}
+                                            )
+                                        else:
+                                            doc.close()
+                                            raise HTTPException(status_code=400, detail=f"Page {page} is out of range for PDF '{f}' (total pages: {len(doc)}).")
+                                    except HTTPException:
+                                        raise
+                                    except Exception as page_err:
+                                        logging.error(f"Error extracting page {page} from {f}: {page_err}")
+                                        raise HTTPException(status_code=500, detail=f"Failed to extract page {page}: {page_err}")
+                                
                                 return FileResponse(
                                     path=str(target_path),
                                     media_type="application/pdf",
