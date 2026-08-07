@@ -761,6 +761,24 @@ def debug_pdf_paths():
             "file_count": len(files),
             "files": files[:100]  # Show up to 100 files for debugging
         }
+        
+    # Inspect S3 credentials and configuration on the server
+    try:
+        from s3_uploader import get_s3_uploader
+        uploader = get_s3_uploader()
+        results["S3_CONFIG"] = {
+            "is_configured": uploader.is_configured() if uploader else False,
+            "env_keys": {
+                "RUNPOD_S3_ACCESS_KEY_set": bool(os.environ.get("RUNPOD_S3_ACCESS_KEY")),
+                "RUNPOD_S3_SECRET_KEY_set": bool(os.environ.get("RUNPOD_S3_SECRET_KEY")),
+                "RUNPOD_S3_ENDPOINT_URL_set": bool(os.environ.get("RUNPOD_S3_ENDPOINT_URL")),
+                "RUNPOD_S3_BUCKET_NAME_set": bool(os.environ.get("RUNPOD_S3_BUCKET_NAME")),
+                "RUNPOD_S3_REGION_set": bool(os.environ.get("RUNPOD_S3_REGION")),
+            }
+        }
+    except Exception as e:
+        results["S3_CONFIG"] = {"error": str(e)}
+
     return results
 
 class DocumentContentUpdateUnified(BaseModel):
