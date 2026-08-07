@@ -481,16 +481,6 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                 # ── Save PDF to backup_pdf ──
                 pdf_backup_path = backup_pdf_file(filename, file_content)
 
-                # ── Upload PDF to RunPod S3 network storage ──
-                s3_key = f"pdf_storage/{filename}"
-                s3_uploaded = False
-                try:
-                    from s3_uploader import upload_pdf_to_s3
-                    if pdf_backup_path:
-                        s3_uploaded = upload_pdf_to_s3(pdf_backup_path, s3_key)
-                except Exception as s3_err:
-                    logging.warning(f"S3 upload optional step skipped/failed: {s3_err}")
-
                 # ── Save metadata to MongoDB ──
                 try:
                     import hashlib
@@ -505,7 +495,7 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                         file_hash=file_hash,
                         pdf_path=f"doc_input/{filename}" if rag_version in ["v2", "version2"] else f"pdf_storage/{filename}",
                         pdf_backup_path=pdf_backup_path,
-                        s3_key=s3_key if s3_uploaded else None,
+                        s3_key=None,
                     )
                 except Exception as meta_err:
                     logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")
@@ -686,46 +676,6 @@ def get_document_pdf_route(file_name: str):
             except Exception as dir_err:
                 logging.warning(f"Error reading directory {d} for PDF search: {dir_err}")
 
-        # ── Fallback to S3 bucket streaming & caching ──
-        try:
-            from s3_uploader import download_pdf_from_s3
-            import urllib.parse
-            for target in search_names:
-                # Try raw/plain key first, then URL-encoded key (to support URL-encoded names like %20, %26)
-                s3_keys = [
-                    f"pdf_storage/{target}",
-                    f"pdf_storage/{urllib.parse.quote(target)}"
-                ]
-                s3_stream = None
-                for key in s3_keys:
-                    s3_stream = download_pdf_from_s3(key)
-                    if s3_stream:
-                        break
-                if s3_stream:
-                    try:
-                        os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
-                        local_path = os.path.join(BACKUP_PDF_DIR, target)
-                        pdf_data = s3_stream.read()
-                        with open(local_path, "wb") as local_f:
-                            local_f.write(pdf_data)
-                        logging.info(f"Successfully cached S3 file locally at: {local_path}")
-                        return FileResponse(
-                            path=local_path,
-                            media_type="application/pdf",
-                            filename=target,
-                            headers={"Content-Disposition": f"inline; filename=\"{target}\""}
-                        )
-                    except Exception as cache_err:
-                        logging.warning(f"Could not cache S3 stream locally: {cache_err}")
-                        import io
-                        return StreamingResponse(
-                            io.BytesIO(pdf_data),
-                            media_type="application/pdf",
-                            headers={"Content-Disposition": f"inline; filename=\"{target}\""}
-                        )
-        except Exception as s3_err:
-            logging.error(f"S3 fallback resolution failed: {s3_err}")
-
         raise HTTPException(status_code=404, detail=f"PDF file '{file_name}' not found")
     except HTTPException:
         raise
@@ -762,23 +712,6 @@ def debug_pdf_paths():
             "files": files[:100]  # Show up to 100 files for debugging
         }
         
-    # Inspect S3 credentials and configuration on the server
-    try:
-        from s3_uploader import get_s3_uploader
-        uploader = get_s3_uploader()
-        results["S3_CONFIG"] = {
-            "is_configured": uploader.is_configured() if uploader else False,
-            "env_keys": {
-                "RUNPOD_S3_ACCESS_KEY_set": bool(os.environ.get("RUNPOD_S3_ACCESS_KEY")),
-                "RUNPOD_S3_SECRET_KEY_set": bool(os.environ.get("RUNPOD_S3_SECRET_KEY")),
-                "RUNPOD_S3_ENDPOINT_URL_set": bool(os.environ.get("RUNPOD_S3_ENDPOINT_URL")),
-                "RUNPOD_S3_BUCKET_NAME_set": bool(os.environ.get("RUNPOD_S3_BUCKET_NAME")),
-                "RUNPOD_S3_REGION_set": bool(os.environ.get("RUNPOD_S3_REGION")),
-            }
-        }
-    except Exception as e:
-        results["S3_CONFIG"] = {"error": str(e)}
-
     return results
 
 class DocumentContentUpdateUnified(BaseModel):
