@@ -18,8 +18,16 @@ logger = logging.getLogger("s3_uploader")
 try:
     import boto3
 except ImportError:
-    boto3 = None
-    logger.warning("boto3 library is not installed. S3 upload will be unavailable until boto3 is installed.")
+    import subprocess
+    import sys
+    logger.info("boto3/botocore library not found. Attempting to install dynamically...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "boto3", "botocore"])
+        import boto3
+        logger.info("boto3/botocore successfully installed dynamically!")
+    except Exception as e:
+        boto3 = None
+        logger.error(f"Failed to dynamically install boto3: {e}")
 
 # Default RunPod S3 Configuration
 DEFAULT_ENDPOINT_URL = "https://s3api-eu-ro-1.runpod.io"
