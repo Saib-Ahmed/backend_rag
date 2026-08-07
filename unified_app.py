@@ -651,6 +651,8 @@ def get_document_pdf_route(file_name: str):
 
         directories = [
             Path(BACKUP_PDF_DIR),
+            Path(RUNPOD_VOLUME) / "pdf_storage",
+            Path(RUNPOD_VOLUME) / "backup_pdf",
             base_dir / "backup_pdf",
             base_dir / "final_rag" / "doc_input",
             base_dir / "final_rag" / "pdf_storage",
@@ -688,6 +690,8 @@ def debug_pdf_paths():
     base_dir = Path(__file__).parent.resolve()
     directories = {
         "BACKUP_PDF_DIR": BACKUP_PDF_DIR,
+        "runpod_volume_pdf_storage": str(Path(RUNPOD_VOLUME) / "pdf_storage"),
+        "runpod_volume_backup_pdf": str(Path(RUNPOD_VOLUME) / "backup_pdf"),
         "backup_pdf": str(base_dir / "backup_pdf"),
         "doc_input": str(base_dir / "final_rag" / "doc_input"),
         "final_rag_pdf_storage": str(base_dir / "final_rag" / "pdf_storage"),
