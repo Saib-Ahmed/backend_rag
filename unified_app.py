@@ -176,12 +176,21 @@ async def enforce_authentication(request: Request, call_next):
     # Allow OPTIONS preflight, public endpoints, and all /auth/* routes
     if request.method == "OPTIONS" or path in _PUBLIC_PATHS or path.startswith("/auth/"):
         return await call_next(request)
-    auth_header = request.headers.get("x-jwt-authorization") or request.headers.get("Authorization", "")
+    auth_header = request.headers.get("Authorization", "")
+    x_auth = request.headers.get("x-jwt-authorization", "")
     token = None
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header.split(" ", 1)[1].strip()
-    elif path.endswith("/pdf"):
+    
+    # 1. Prioritize x-jwt-authorization header set by proxy worker
+    if x_auth.startswith("Bearer "):
+        token = x_auth.split(" ", 1)[1].strip()
+    
+    # 2. Check query parameter token for browser PDF streaming requests
+    if not token and path.endswith("/pdf"):
         token = request.query_params.get("token")
+        
+    # 3. Fall back to standard Authorization header only if x-jwt-authorization was not provided
+    if not token and not x_auth and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
 
     if not token:
         return JSONResponse(status_code=401, content={"detail": "Authentication required"})
