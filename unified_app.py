@@ -637,6 +637,7 @@ def get_document_pdf_route(file_name: str):
         from pathlib import Path
         base_dir = Path(__file__).parent.resolve()
         import os
+        import urllib.parse
         search_names = {
             file_name,
             file_name.replace(" ", "_"),
@@ -648,6 +649,8 @@ def get_document_pdf_route(file_name: str):
             search_names.add(name.replace("..", "."))
             search_names.add(name.replace(" ", "_"))
             search_names.add(name.replace("_", " "))
+            search_names.add(urllib.parse.quote(name))
+            search_names.add(urllib.parse.unquote(name))
 
         directories = [
             Path(BACKUP_PDF_DIR),
