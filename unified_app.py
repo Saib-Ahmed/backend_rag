@@ -92,11 +92,22 @@ RUNPOD_VOLUME = "/runpod-volume"
 if os.path.exists(RUNPOD_VOLUME) and os.access(RUNPOD_VOLUME, os.W_OK):
     BACKUP_MD_DIR = os.path.join(RUNPOD_VOLUME, "backup_markdown")
     BACKUP_PDF_DIR = os.path.join(RUNPOD_VOLUME, "backup_pdf")
+    SME_BACKUP_MD_DIR = os.path.join(RUNPOD_VOLUME, "sme", "backup_markdown")
+    SME_BACKUP_PDF_DIR = os.path.join(RUNPOD_VOLUME, "sme", "backup_pdf")
+    SME_QDRANT_PATH = os.path.join(RUNPOD_VOLUME, "sme", "qdrant_db")
 else:
-    BACKUP_MD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_markdown")
-    BACKUP_PDF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backup_pdf")
+    base_proj = os.path.dirname(os.path.abspath(__file__))
+    BACKUP_MD_DIR = os.path.join(base_proj, "backup_markdown")
+    BACKUP_PDF_DIR = os.path.join(base_proj, "backup_pdf")
+    SME_BACKUP_MD_DIR = os.path.join(base_proj, "sme", "backup_markdown")
+    SME_BACKUP_PDF_DIR = os.path.join(base_proj, "sme", "backup_pdf")
+    SME_QDRANT_PATH = os.path.join(base_proj, "sme", "qdrant_db")
+
 os.makedirs(BACKUP_MD_DIR, exist_ok=True)
 os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
+os.makedirs(SME_BACKUP_MD_DIR, exist_ok=True)
+os.makedirs(SME_BACKUP_PDF_DIR, exist_ok=True)
+os.makedirs(SME_QDRANT_PATH, exist_ok=True)
 
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -211,12 +222,22 @@ class RegisterRequest(BaseModel):
     email: str
     password: str
 
+class AttachedFilePayload(BaseModel):
+    id: Optional[str] = None
+    name: str
+    uri: Optional[str] = None
+    content_base64: Optional[str] = None
+    text: Optional[str] = None
+    mimeType: Optional[str] = None
+
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     query: str = Field(..., max_length=8000)
-    model: str = "v1"  # "v1" (RAG_system) or "v2" (final_rag)
+    model: str = "v1"  # "v1" (RAG_system), "v2" (final_rag), or "claude-3-5-sonnet"
+    domain: Optional[str] = "msme"  # "msme" or "sme"
     user_id: Optional[str] = None  # Ignored — server derives user_id from the verified JWT
     use_claude: bool = False
+    files: Optional[List[dict]] = None
 
 _ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
 
@@ -340,7 +361,123 @@ def chat_stream(req: ChatRequest, request: Request):
         title = req.query[:30] + "..." if len(req.query) > 30 else req.query
         session_id = create_session(user_id, title)
 
+    clean_domain = (req.domain or "msme").lower()
     append_message(session_id, "user", req.query, req.model, user_id=user_id)
+
+    def generate_sme():
+        # 1. Parse attached files if any (PDF / images / text)
+        attached_docs_text = []
+        if req.files:
+            for f in req.files:
+                fname = f.get("name", "Document")
+                ftype = f.get("mimeType", "") or f.get("type", "")
+                ftext = f.get("text", "")
+                fbase64 = f.get("content_base64") or f.get("base64") or ""
+                furi = f.get("uri", "")
+
+                if ftext:
+                    attached_docs_text.append(f"--- ATTACHED FILE: {fname} ---\n{ftext}")
+                elif fbase64:
+                    try:
+                        import base64
+                        import fitz
+                        clean_b64 = fbase64.split(",")[-1]
+                        raw_bytes = base64.b64decode(clean_b64)
+                        if "pdf" in ftype.lower() or fname.lower().endswith(".pdf"):
+                            doc = fitz.open(stream=raw_bytes, filetype="pdf")
+                            pdf_pages = []
+                            for pnum in range(len(doc)):
+                                ptxt = doc[pnum].get_text().strip()
+                                if ptxt:
+                                    pdf_pages.append(f"[Page {pnum+1}]\n" + ptxt)
+                            attached_docs_text.append(f"--- ATTACHED PDF: {fname} ---\n" + "\n".join(pdf_pages))
+                        else:
+                            txt = raw_bytes.decode("utf-8", errors="replace")
+                            attached_docs_text.append(f"--- ATTACHED FILE: {fname} ---\n{txt}")
+                    except Exception as b64_err:
+                        logging.warning(f"Failed to decode attached file {fname}: {b64_err}")
+                elif furi and furi.startswith("data:"):
+                    try:
+                        import base64
+                        clean_b64 = furi.split(",")[-1]
+                        raw_bytes = base64.b64decode(clean_b64)
+                        txt = raw_bytes.decode("utf-8", errors="replace")
+                        attached_docs_text.append(f"--- ATTACHED FILE: {fname} ---\n{txt}")
+                    except Exception as uri_err:
+                        logging.warning(f"Failed to read data URI for {fname}: {uri_err}")
+
+        # 2. Retrieve relevant chunks from SME knowledge base
+        retrieved_sources = []
+        knowledge_context = ""
+        try:
+            res = requests.get("http://127.0.0.1:8003/api/documents/search", params={"q": req.query, "domain": "sme"}, timeout=20)
+            if res.status_code == 200:
+                s_data = res.json()
+                results = s_data.get("results", []) or s_data.get("chunks", [])
+                if results:
+                    chunk_texts = []
+                    for r in results[:6]:
+                        s_name = r.get("source_file") or r.get("file_name", "SME Knowledge Base")
+                        p_label = r.get("page_label") or r.get("page_no", 1)
+                        c_text = r.get("text", "")
+                        chunk_texts.append(f"[{s_name} - Page {p_label}]\n{c_text}")
+                        retrieved_sources.append({"file_name": s_name, "page": p_label, "text": c_text[:150]})
+                    knowledge_context = "\n\n".join(chunk_texts)
+        except Exception as s_err:
+            logging.warning(f"SME knowledge base search fallback: {s_err}")
+
+        # 3. Construct dual-context Prompt for Claude 3.5 Sonnet
+        system_prompt = (
+            "You are an expert SME (Small and Medium Enterprises) AI legal, financial, and strategic assistant. "
+            "Provide insightful, highly accurate, structured answers with clear headings and bullet points.\n"
+            "If user-attached documents and/or knowledge base passages are provided, synthesize your response by combining facts from both sources and clearly citing relevant sections."
+        )
+
+        user_content_parts = []
+        if attached_docs_text:
+            user_content_parts.append("=== USER ATTACHED DOCUMENTS ===\n" + "\n\n".join(attached_docs_text))
+        if knowledge_context:
+            user_content_parts.append("=== SME KNOWLEDGE BASE PASSAGES ===\n" + knowledge_context)
+        user_content_parts.append("=== USER QUESTION ===\n" + req.query)
+
+        full_user_prompt = "\n\n".join(user_content_parts)
+
+        # 4. Stream response from Claude 3.5 Sonnet (with fallback to Gemini if Claude key missing)
+        full_answer = []
+        try:
+            from final_rag.agent.claude_client import ClaudeClient
+            claude = ClaudeClient()
+            if claude.api_key:
+                messages = [{"role": "user", "content": full_user_prompt}]
+                for token in claude.chat_stream(messages=messages, system=system_prompt):
+                    full_answer.append(token)
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+            else:
+                # Fallback to Gemini 2.5 Flash if Claude API key is not configured
+                gemini_key = os.environ.get("GEMINI_API_KEY", "")
+                if gemini_key:
+                    from google import genai
+                    client = genai.Client(api_key=gemini_key)
+                    resp = client.models.generate_content_stream(
+                        model="gemini-2.5-flash",
+                        contents=[system_prompt + "\n\n" + full_user_prompt]
+                    )
+                    for chunk in resp:
+                        txt = chunk.text or ""
+                        full_answer.append(txt)
+                        yield f"data: {json.dumps({'token': txt})}\n\n"
+                else:
+                    msg = "Error: CLAUDE_API_KEY or GEMINI_API_KEY is not configured in the server environment."
+                    yield f"data: {json.dumps({'token': msg})}\n\n"
+        except Exception as e:
+            logging.error(f"SME Claude streaming error: {e}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        complete_answer = "".join(full_answer).strip()
+        append_message(session_id, "assistant", complete_answer, "claude-3-5-sonnet", sources=retrieved_sources, user_id=user_id)
+        if retrieved_sources:
+            yield f"data: {json.dumps({'metadata': retrieved_sources})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
 
     def generate_v1():
         # Proxy to RAG_system (port 8002) with true real-time SSE streaming
@@ -390,8 +527,12 @@ def chat_stream(req: ChatRequest, request: Request):
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-    # In UI, models are 'version1' and 'version2'
-    generator = generate_v1() if req.model == "version1" else generate_v2()
+    if clean_domain == "sme" or req.model in ["claude-3-5-sonnet", "sme", "claude"]:
+        generator = generate_sme()
+    elif req.model == "version1":
+        generator = generate_v1()
+    else:
+        generator = generate_v2()
 
     return StreamingResponse(
         generator,
@@ -399,12 +540,14 @@ def chat_stream(req: ChatRequest, request: Request):
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
 
-def backup_markdown_file(filename: str, rag_version: str):
+def backup_markdown_file(filename: str, rag_version: str, domain: str = "msme"):
     try:
         import shutil
         from pathlib import Path
         stem = Path(filename).stem
         md_source = None
+        clean_domain = (domain or "msme").lower()
+        target_dest_dir = SME_BACKUP_MD_DIR if clean_domain == "sme" else BACKUP_MD_DIR
 
         if rag_version in ["version2", "v2"]:
             env_dir = os.environ.get("MD_OUTPUT_DIR")
@@ -426,37 +569,40 @@ def backup_markdown_file(filename: str, rag_version: str):
                     md_source = candidate
 
         if md_source:
-            v_suffix = "_v2" if rag_version in ["version2", "v2"] else "_v1"
-            backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}{v_suffix}.md")
+            v_suffix = "_sme" if clean_domain == "sme" else ("_v2" if rag_version in ["version2", "v2"] else "_v1")
+            backup_dest = os.path.join(target_dest_dir, f"{stem}{v_suffix}.md")
             # If file already exists in backup, add timestamp suffix to keep both
             if os.path.exists(backup_dest):
                 from datetime import datetime
                 ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-                backup_dest = os.path.join(BACKUP_MD_DIR, f"{stem}{v_suffix}_{ts}.md")
+                backup_dest = os.path.join(target_dest_dir, f"{stem}{v_suffix}_{ts}.md")
             shutil.copy2(md_source, backup_dest)
-            logging.info(f"Backed up md to: {backup_dest}")
+            logging.info(f"Backed up md [{clean_domain}] to: {backup_dest}")
         else:
             logging.warning(f"No .md source file found for backup of {filename}")
     except Exception as backup_err:
         logging.error(f"Failed to create backup for {filename}: {backup_err}")
 
-def backup_pdf_file(filename: str, file_content: bytes) -> str:
-    """Save original PDF to backup_pdf directory and return the backup file path."""
+def backup_pdf_file(filename: str, file_content: bytes, domain: str = "msme") -> str:
+    """Save original PDF to backup_pdf directory (MSME or SME) and return the backup file path."""
     try:
-        pdf_dest = os.path.join(BACKUP_PDF_DIR, filename)
+        clean_domain = (domain or "msme").lower()
+        target_dir = SME_BACKUP_PDF_DIR if clean_domain == "sme" else BACKUP_PDF_DIR
+        pdf_dest = os.path.join(target_dir, filename)
         with open(pdf_dest, "wb") as f:
             f.write(file_content)
-        logging.info(f"Backed up PDF to: {pdf_dest}")
+        logging.info(f"Backed up PDF [{clean_domain}] to: {pdf_dest}")
         return pdf_dest
     except Exception as err:
         logging.error(f"Failed to backup PDF {filename}: {err}")
         return ""
 
 def process_upload_background(task_id: str, filename: str, file_content: bytes, content_type: str, buildGraph: bool, rag_version: str,
-                               doc_type: str = "PDF", source: str = "public", source_description: str = "", creation_date: str = ""):
+                               doc_type: str = "PDF", source: str = "public", source_description: str = "", creation_date: str = "", domain: str = "msme"):
     try:
-        logging.info(f"[Background Task {task_id}] Started for file: {filename}")
-        if rag_version in ["version2", "v2"]:
+        clean_domain = (domain or "msme").lower()
+        logging.info(f"[Background Task {task_id}] Started for file: {filename} [domain={clean_domain}]")
+        if rag_version in ["version2", "v2"] or clean_domain == "sme":
             target_url = "http://127.0.0.1:8003/upload"
             files_payload = {"file": (filename, file_content, content_type)}
             res = requests.post(target_url, files=files_payload, timeout=900)
@@ -479,7 +625,7 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                 upload_tasks[task_id] = {"status": "success", "data": data}
 
                 # ── Save PDF to backup_pdf ──
-                pdf_backup_path = backup_pdf_file(filename, file_content)
+                pdf_backup_path = backup_pdf_file(filename, file_content, domain=clean_domain)
 
                 # ── Save metadata to MongoDB ──
                 try:
@@ -496,12 +642,13 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                         pdf_path=f"doc_input/{filename}" if rag_version in ["v2", "version2"] else f"pdf_storage/{filename}",
                         pdf_backup_path=pdf_backup_path,
                         s3_key=None,
+                        domain=clean_domain,
                     )
                 except Exception as meta_err:
                     logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")
 
                 # ── Copy .md to backup_markdown/ (immutable archive) ──
-                backup_markdown_file(filename, rag_version)
+                backup_markdown_file(filename, rag_version, domain=clean_domain)
         else:
             logging.error(f"[Background Task {task_id}] Downstream error: status={res.status_code} body={res.text[:500]}")
             upload_tasks[task_id] = {"status": "failed", "error": f"Backend returned {res.status_code}: {res.text}"}
@@ -534,6 +681,7 @@ def upload_file(
     source: str = Form("public"),
     source_description: str = Form(""),
     creation_date: str = Form(""),
+    domain: str = Form("msme"),
     request: Request = None,
 ):
     current_user = request.state.current_user
@@ -569,9 +717,10 @@ def upload_file(
             source,
             source_description,
             creation_date,
+            domain,
         )
         
-        logging.info(f"[Upload] Dispatched background task {task_id} for file: {file.filename}")
+        logging.info(f"[Upload] Dispatched background task {task_id} for file: {file.filename} [domain={domain}]")
         
         return {"status": "processing", "task_id": task_id, "message": "Document ingestion started in background"}
     except Exception as e:
@@ -811,10 +960,10 @@ def delete_document_route(file_name: str, request: Request, rag_version: str = Q
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
 
 @app.get("/documents/metadata")
-def get_documents_metadata_route():
-    """Return metadata for all ingested documents."""
+def get_documents_metadata_route(domain: Optional[str] = Query(None)):
+    """Return metadata for all ingested documents, optionally filtered by domain ('all', 'msme', 'sme')."""
     try:
-        return get_all_document_metadata()
+        return get_all_document_metadata(domain=domain)
     except Exception as e:
         logging.error(f"Failed to get document metadata: {e}")
         raise HTTPException(status_code=500, detail="An internal error occurred. Please try again.")
@@ -827,6 +976,7 @@ class UpdateDocumentMetadataRequest(BaseModel):
     creation_date: Optional[str] = None
     ingestion_date: Optional[str] = None
     rag_version: Optional[str] = None
+    domain: Optional[str] = None
 
 
 @app.put("/documents/{file_name}/metadata")
@@ -840,6 +990,7 @@ def update_document_metadata_route(file_name: str, req: UpdateDocumentMetadataRe
             creation_date=req.creation_date,
             ingestion_date=req.ingestion_date,
             rag_version=req.rag_version,
+            domain=req.domain,
         )
         return {"status": "success" if success else "no_change"}
     except Exception as e:

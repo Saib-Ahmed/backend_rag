@@ -199,15 +199,18 @@ def save_document_metadata(
     pdf_path: Optional[str] = None,
     pdf_backup_path: Optional[str] = None,
     s3_key: Optional[str] = None,
+    domain: str = "msme",
 ):
-    """Save or update document metadata in MongoDB with version history tracking and PDF storage pointers."""
+    """Save or update document metadata in MongoDB with version history tracking, domain isolation, and PDF storage pointers."""
     if db is None:
         return
     
+    clean_domain = (domain or "msme").lower()
     existing = db.document_metadata.find_one({"file_name": file_name})
     update_item = {
         "date": datetime.utcnow().isoformat(),
-        "version": rag_version
+        "version": rag_version,
+        "domain": clean_domain
     }
     
     if existing:
@@ -224,6 +227,7 @@ def save_document_metadata(
             "creation_date": creation_date,
             "ingestion_date": datetime.utcnow(),
             "rag_version": rag_version,
+            "domain": clean_domain,
             "update_count": update_count,
             "update_history": update_history,
         }
@@ -249,6 +253,7 @@ def save_document_metadata(
             "creation_date": creation_date,
             "ingestion_date": datetime.utcnow(),
             "rag_version": rag_version,
+            "domain": clean_domain,
             "update_count": 0,
             "update_history": [update_item]
         }
@@ -263,7 +268,7 @@ def save_document_metadata(
 
         db.document_metadata.insert_one(doc)
         
-    logger.info(f"Saved metadata for '{file_name}' (updates: {update_count if existing else 0})")
+    logger.info(f"Saved metadata for '{file_name}' [domain={clean_domain}] (updates: {update_count if existing else 0})")
 
 
 def get_document_metadata(file_name: str) -> Optional[Dict[str, Any]]:
@@ -286,14 +291,27 @@ def get_document_metadata_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
     return doc
 
 
-def get_all_document_metadata() -> List[Dict[str, Any]]:
-    """Return metadata for all documents."""
+def get_all_document_metadata(domain: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return metadata for all documents, optionally filtered by domain ('all', 'msme', 'sme')."""
     if db is None:
         return []
-    docs = list(db.document_metadata.find({}, {"_id": 0}).sort("ingestion_date", -1))
+    
+    query = {}
+    if domain and domain.lower() != "all":
+        clean = domain.lower()
+        if clean == "msme":
+            query = {"$or": [{"domain": "msme"}, {"domain": {"$exists": False}}]}
+        elif clean == "sme":
+            query = {"domain": "sme"}
+        else:
+            query = {"domain": clean}
+
+    docs = list(db.document_metadata.find(query, {"_id": 0}).sort("ingestion_date", -1))
     for doc in docs:
         if isinstance(doc.get("ingestion_date"), datetime):
             doc["ingestion_date"] = doc["ingestion_date"].isoformat()
+        if "domain" not in doc:
+            doc["domain"] = "msme"
     return docs
 
 
@@ -316,6 +334,7 @@ def update_document_metadata(
     pdf_path: Optional[str] = None,
     pdf_backup_path: Optional[str] = None,
     s3_key: Optional[str] = None,
+    domain: Optional[str] = None,
 ) -> bool:
     """Update fields for a document's metadata in MongoDB."""
     if db is None:
@@ -332,6 +351,8 @@ def update_document_metadata(
         updated_fields["creation_date"] = creation_date
     if rag_version is not None:
         updated_fields["rag_version"] = rag_version
+    if domain is not None:
+        updated_fields["domain"] = domain.lower()
     if pdf_path is not None:
         updated_fields["pdf_path"] = pdf_path
     if pdf_backup_path is not None:
