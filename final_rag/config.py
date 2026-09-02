@@ -8,9 +8,10 @@ load_dotenv(BASE_DIR / ".env")
 load_dotenv()
 
 # ── Paths ────────────────────────────────────────────────────────────── 
+STORAGE_ROOT    = Path(os.getenv("STORAGE_ROOT", "/data" if os.path.exists("/data") else BASE_DIR.parent))
 DOC_INPUT_DIR   = BASE_DIR / "doc_input"
-MD_OUTPUT_DIR   = Path(os.getenv("MD_OUTPUT_DIR", BASE_DIR / "md_output"))
-PDF_STORAGE_DIR = Path(os.getenv("PDF_STORAGE_DIR", BASE_DIR / "pdf_storage"))
+MD_OUTPUT_DIR   = Path(os.getenv("MD_OUTPUT_DIR", STORAGE_ROOT / "1_markdown_storage" / "msme" / "rag2" if os.path.exists("/data") else BASE_DIR / "md_output"))
+PDF_STORAGE_DIR = Path(os.getenv("PDF_STORAGE_DIR", STORAGE_ROOT / "2_pdf_storage" / "msme" / "rag2" if os.path.exists("/data") else BASE_DIR / "pdf_storage"))
 
 os.makedirs(DOC_INPUT_DIR, exist_ok=True)
 os.makedirs(MD_OUTPUT_DIR, exist_ok=True) 
@@ -34,7 +35,7 @@ CLAUDE_MAX_TOKENS  = int(os.getenv("CLAUDE_MAX_TOKENS", "8192"))
 # ── Grounding Checker ──────────────────────────────────────────────────
 GEMINI_API_KEY          = os.getenv("GEMINI_API_KEY", "")
 NVIDIA_API_KEY          = os.getenv("NVIDIA_API_KEY", "")
-GEMINI_GROUNDING_MODEL  = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
+GEMINI_GROUNDING_MODEL  = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
 NVIDIA_GROUNDING_MODEL  = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
 NVIDIA_GROUNDING_URL    = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_MODELS = [
@@ -69,8 +70,8 @@ EMBED_DIMENSIONS   = 2560
 SPARSE_MODEL_NAME  = "Qdrant/bm25"
 
 # ── Qdrant ─────────────────────────────────────────────────────────────
-QDRANT_COLLECTION_NAME = "rag_documents"
-QDRANT_STORAGE_PATH    = Path(os.getenv("QDRANT_STORAGE_PATH", BASE_DIR / "qdrant_db"))
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "rag_documents")
+QDRANT_STORAGE_PATH    = Path(os.getenv("QDRANT_STORAGE_PATH", STORAGE_ROOT / "4_qdrant_db" if os.path.exists("/data") else BASE_DIR / "qdrant_db"))
 
 # ── Retriever ──────────────────────────────────────────────────────────
 TOP_K_SEARCH              = 18
@@ -117,6 +118,6 @@ NUM_CTX           = 200000
 MAX_TOKENS        = 5000
 
 # ── Layout Model Paths ────────────────────────────────────────────────
-YOLO_MODEL_PATH        = Path(os.getenv("YOLO_MODEL_PATH", BASE_DIR / "ingestion" / "YOLO_Layout_Model" / "doclayout_yolo_docstructbench_imgsz1024.pt"))
-TRANSFORMER_MODEL_PATH = Path(os.getenv("TRANSFORMER_MODEL_PATH", BASE_DIR / "ingestion" / "Table_Trans_Model"))
+YOLO_MODEL_PATH        = Path(os.getenv("YOLO_MODEL_PATH", STORAGE_ROOT / "3_models" / "yolo_layout" / "doclayout_yolo_docstructbench_imgsz1024.pt" if os.path.exists("/data") else BASE_DIR / "ingestion" / "YOLO_Layout_Model" / "doclayout_yolo_docstructbench_imgsz1024.pt"))
+TRANSFORMER_MODEL_PATH = Path(os.getenv("TRANSFORMER_MODEL_PATH", STORAGE_ROOT / "3_models" / "table_transformer" if os.path.exists("/data") else BASE_DIR / "ingestion" / "Table_Trans_Model"))
 

@@ -157,9 +157,30 @@ class ClaudeClient:
                     "[ClaudeClient] chat_stream() failed MID-STREAM | model=%s | error=%s",
                     self.model, e,
                 )
+                raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e
             else:
-                logger.error(
-                    "[ClaudeClient] chat_stream() failed before first token | model=%s | error=%s",
-                    self.model, e,
+                logger.warning(
+                    "[ClaudeClient] Claude stream failed before first token (%s) — falling back to Gemini 2.5 Flash with Qdrant context...",
+                    e,
                 )
-            raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e
+                gemini_key = os.environ.get("GEMINI_API_KEY", "")
+                if gemini_key:
+                    try:
+                        from google import genai
+                        client = genai.Client(api_key=gemini_key)
+                        prompt_content = messages[0]["content"] if messages else ""
+                        if system:
+                            prompt_content = f"{system}\n\n{prompt_content}"
+                        resp = client.models.generate_content_stream(
+                            model="gemini-2.5-flash",
+                            contents=[prompt_content]
+                        )
+                        for chunk in resp:
+                            txt = chunk.text or ""
+                            if txt:
+                                yield txt
+                        logger.info("[ClaudeClient] Gemini fallback stream completed successfully with full Qdrant context.")
+                        return
+                    except Exception as gemini_err:
+                        logger.error("[ClaudeClient] Gemini fallback stream also failed: %s", gemini_err)
+                raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e

@@ -42,7 +42,7 @@ logger = logging.getLogger("agent.grounding_checker")
 # ── Constants ──────────────────────────────────────────────────────────────────
 NVIDIA_GROUNDING_URL   = "https://integrate.api.nvidia.com/v1/chat/completions"
 NVIDIA_GROUNDING_MODEL = os.getenv("NVIDIA_GROUNDING_MODEL", "z-ai/glm-5.2")
-GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.0-flash")
+GEMINI_GROUNDING_MODEL = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
 GROUNDING_TIMEOUT_SEC  = int(os.getenv("GROUNDING_TIMEOUT_SEC", "90"))
 # GROUNDING_ENABLED is re-read per call (fix #9) — not cached at module level
 
@@ -293,7 +293,7 @@ def _check_with_nvidia_model(prompt: str, model_name: str) -> dict:
 # ── Main checker class ─────────────────────────────────────────────────────────
 class GroundingChecker:
     """
-    Faithfulness checker using Gemini → NVIDIA Multi-Model fallbacks.
+    Faithfulness checker using Gemini → NVIDIA cloud models.
 
     Usage:
         checker = GroundingChecker()
@@ -320,7 +320,6 @@ class GroundingChecker:
         -------
         GroundingResult — always returns (never raises); on failure verdict="UNCHECKED".
         """
-        # Re-read per call so env var changes take effect without server restart (fix #9)
         grounding_enabled = os.getenv("GROUNDING_ENABLED", "true").lower() == "true"
         if not grounding_enabled:
             logger.info("[GroundingChecker] Grounding disabled via GROUNDING_ENABLED=false")
@@ -344,16 +343,13 @@ class GroundingChecker:
                 provider="none",
             )
 
-        # Truncate context at a chunk boundary (not mid-char) (fix #2 context side)
         context_text = "\n\n---\n\n".join(chunks)
         if len(context_text) > MAX_CONTEXT_CHARS:
             cutoff = context_text.rfind('\n', 0, MAX_CONTEXT_CHARS)
             context_text = context_text[:cutoff] if cutoff != -1 else context_text[:MAX_CONTEXT_CHARS]
 
-        # Strip ONLY file-citation markers — preserves legal refs like [Section 2(n)] (fix #3)
         cleaned_answer = _FILE_CITATION_RE.sub(' ', answer)
 
-        # Truncate at last complete sentence, not mid-character (fix #2)
         if len(cleaned_answer) > MAX_ANSWER_CHARS:
             cutoff = cleaned_answer.rfind('.', 0, MAX_ANSWER_CHARS)
             answer_text = cleaned_answer[:cutoff + 1] if cutoff != -1 else cleaned_answer[:MAX_ANSWER_CHARS]
@@ -362,40 +358,29 @@ class GroundingChecker:
 
         prompt = _build_grounding_prompt(query, context_text, answer_text)
 
-        # ── Try NVIDIA GLM-5.2 first, fall back to Gemini & other models ──
         raw_result   = None
         provider_used = None
 
-        try:
-            raw_result    = _check_with_nvidia_model(prompt, "z-ai/glm-5.2")
-            provider_used = "nvidia_z-ai_glm-5.2"
-            logger.info("✅ [GroundingChecker] NVIDIA GLM-5.2 grounding succeeded.")
-        except Exception as glm_err:
-            logger.warning("⚠️  [GroundingChecker] NVIDIA GLM-5.2 failed: %s — trying Gemini & other fallbacks...", glm_err)
-            
-            fallbacks = [
-                ("gemini", lambda: _check_with_gemini(prompt)),
-                ("nvidia_meta_llama-3.3-70b-instruct", lambda: _check_with_nvidia_model(prompt, "meta/llama-3.3-70b-instruct")),
-                ("nvidia_mistralai_mistral-large-2-instruct", lambda: _check_with_nvidia_model(prompt, "mistralai/mistral-large-2-instruct")),
-                ("nvidia_minimaxai_minimax-m3", lambda: _check_with_nvidia_model(prompt, "minimaxai/minimax-m3")),
-            ]
-            
-            for provider_name, checker_func in fallbacks:
-                try:
-                    raw_result    = checker_func()
-                    provider_used = provider_name
-                    logger.info("✅ [GroundingChecker] Fallback model %s succeeded.", provider_name)
-                    break
-                except Exception as fallback_e:
-                    logger.warning("⚠️  [GroundingChecker] Fallback model %s failed: %s", provider_name, fallback_e)
-            
-            if not raw_result:
-                logger.error("❌ [GroundingChecker] Both GLM-5.2, Gemini, and other NVIDIA fallbacks failed.")
-                return GroundingResult(
-                    verdict="UNCHECKED",
-                    reasoning=f"All providers failed. GLM-5.2: {glm_err} | Fallbacks failed.",
-                    provider="none",
-                )
+        providers = [
+            ("gemini", lambda: _check_with_gemini(prompt)),
+        ]
+
+        for provider_name, checker_func in providers:
+            try:
+                raw_result = checker_func()
+                provider_used = provider_name
+                logger.info("✅ [GroundingChecker] %s grounding succeeded.", provider_name)
+                break
+            except Exception as e:
+                logger.warning("⚠️  [GroundingChecker] %s failed: %s", provider_name, e)
+
+        if not raw_result:
+            logger.error("❌ [GroundingChecker] All grounding providers failed.")
+            return GroundingResult(
+                verdict="UNCHECKED",
+                reasoning="All cloud grounding providers failed.",
+                provider="none",
+            )
 
         # ── Validate and build result ──────────────────────────────────────────
         try:

@@ -36,3 +36,10 @@ desktop.ini
 # IDE/Editor config
 .vscode/
 .idea/
+.agents/
+
+# Security & Private Keys
+*.pem
+*.key
+*.id_rsa
+lex_AI.pem

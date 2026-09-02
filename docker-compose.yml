@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  combine_rag_backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: combine_rag_backend
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - STORAGE_ROOT=/data
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - /data:/data
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+      - "8003:8003"
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

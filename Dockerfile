@@ -58,8 +58,8 @@ RUN pip install --no-cache-dir uv && \
 COPY . .
 
 # ── Startup Script ───────────────────────────────────────────────────────────
-COPY start_runpod.sh /start_runpod.sh
-RUN chmod +x /start_runpod.sh
+COPY start_ec2.sh /start_ec2.sh
+RUN chmod +x /start_ec2.sh
 
 # ── Expose Ports ─────────────────────────────────────────────────────────────
 # 8001 = Unified API Gateway
@@ -68,4 +68,4 @@ RUN chmod +x /start_runpod.sh
 # 11434 = Ollama API
 EXPOSE 8001 8002 8003 11434
 
-CMD ["/start_runpod.sh"]
+CMD ["/start_ec2.sh"]

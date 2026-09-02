@@ -31,9 +31,13 @@ logging.getLogger("neo4j").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 
-import requests
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
 try:
     import unified_db
 except ImportError:
@@ -43,8 +47,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from rag_engine import RAGEngine
 import config
+from rag_engine import RAGEngine
 from new_ingestion.parser import ParsingMode
 from live_search import LiveSearchEngine, load_live_mappings, save_live_mappings
 from session_store import (

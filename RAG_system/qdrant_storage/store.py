@@ -49,9 +49,12 @@ class QdrantManager:
     for fast metadata filtering across thousands of documents.
     """
 
-    def __init__(self):
-        self.storage_path    = Path(config.QDRANT_STORAGE_PATH)
-        self.collection_name = config.QDRANT_COLLECTION_NAME
+    def __init__(self, storage_path: Optional[str] = None):
+        target_path = storage_path or os.getenv("QDRANT_STORAGE_PATH_V1")
+        if not target_path:
+            target_path = "/data/4_qdrant_db/rag_system" if os.path.exists("/data") else "./qdrant_db"
+        self.storage_path    = Path(target_path)
+        self.collection_name = getattr(config, "COLLECTION_NAME", getattr(config, "QDRANT_COLLECTION_NAME", "local_documents"))
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
         path_str = str(self.storage_path.resolve())

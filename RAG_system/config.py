@@ -65,7 +65,7 @@ MIN_EMBEDDABLE_TOKENS = 15
 # Qdrant Configuration
 
 # QDRANT_PATH: Local filesystem directory where the persistent Qdrant vector database files are stored.
-QDRANT_PATH = os.getenv("QDRANT_STORAGE_PATH_V1", "./qdrant_db")
+QDRANT_PATH = os.getenv("QDRANT_STORAGE_PATH_V1", "/data/4_qdrant_db/rag_system" if os.path.exists("/data") else "./qdrant_db")
 
 # QDRANT_STORAGE_PATH: Storage location alias/path for Qdrant local storage configurations.
 QDRANT_STORAGE_PATH = QDRANT_PATH

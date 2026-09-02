@@ -36,3 +36,5 @@ uvicorn>=0.29.0
 google-genai
 tabulate
 cachetools
+boto3>=1.34.0
+botocore>=1.34.0

@@ -83,31 +83,44 @@ _configure_access_log_filters()
 
 # Global task registry for background uploads
 # Format: { "task_id": {"status": "processing" | "success" | "failed" | "already_exists", "data": {...}, "error": "..."} }
+# Global task registry for background uploads
+# Format: { "task_id": {"status": "processing" | "success" | "failed" | "already_exists", "data": {...}, "error": "..."} }
 upload_tasks = TTLCache(maxsize=1000, ttl=3600)
 msme_upload_tasks = TTLCache(maxsize=1000, ttl=3600)
 
-# Ensure backup_markdown directory exists (immutable archive)
-# If running on RunPod serverless, store inside the persistent network volume at /runpod-volume
-RUNPOD_VOLUME = "/runpod-volume"
-if os.path.exists(RUNPOD_VOLUME) and os.access(RUNPOD_VOLUME, os.W_OK):
-    BACKUP_MD_DIR = os.path.join(RUNPOD_VOLUME, "backup_markdown")
-    BACKUP_PDF_DIR = os.path.join(RUNPOD_VOLUME, "backup_pdf")
-    SME_BACKUP_MD_DIR = os.path.join(RUNPOD_VOLUME, "sme", "backup_markdown")
-    SME_BACKUP_PDF_DIR = os.path.join(RUNPOD_VOLUME, "sme", "backup_pdf")
-    SME_QDRANT_PATH = os.path.join(RUNPOD_VOLUME, "sme", "qdrant_db")
-else:
-    base_proj = os.path.dirname(os.path.abspath(__file__))
-    BACKUP_MD_DIR = os.path.join(base_proj, "backup_markdown")
-    BACKUP_PDF_DIR = os.path.join(base_proj, "backup_pdf")
-    SME_BACKUP_MD_DIR = os.path.join(base_proj, "sme", "backup_markdown")
-    SME_BACKUP_PDF_DIR = os.path.join(base_proj, "sme", "backup_pdf")
-    SME_QDRANT_PATH = os.path.join(base_proj, "sme", "qdrant_db")
+# S3 Helper Integration
+try:
+    from s3_service import (
+        upload_file_to_s3,
+        upload_bytes_to_s3,
+        get_s3_presigned_url,
+        stream_s3_file_bytes,
+        check_s3_file_exists,
+    )
+except ImportError:
+    upload_file_to_s3 = None
+    upload_bytes_to_s3 = None
+    get_s3_presigned_url = None
+    stream_s3_file_bytes = None
+    check_s3_file_exists = None
+
+# Ensure storage directories exist (Modular 4-tier hierarchy)
+STORAGE_ROOT = os.getenv("STORAGE_ROOT", "/data" if os.path.exists("/data") else os.path.dirname(os.path.abspath(__file__)))
+
+BACKUP_MD_DIR = os.getenv("BACKUP_MD_DIR", os.path.join(STORAGE_ROOT, "1_markdown_storage", "msme", "backup"))
+SME_BACKUP_MD_DIR = os.getenv("SME_BACKUP_MD_DIR", os.path.join(STORAGE_ROOT, "1_markdown_storage", "sme", "backup"))
+
+BACKUP_PDF_DIR = os.getenv("BACKUP_PDF_DIR", os.path.join(STORAGE_ROOT, "2_pdf_storage", "msme", "backup"))
+SME_BACKUP_PDF_DIR = os.getenv("SME_BACKUP_PDF_DIR", os.path.join(STORAGE_ROOT, "2_pdf_storage", "sme", "backup"))
+
+QDRANT_STORAGE_PATH = os.getenv("QDRANT_STORAGE_PATH", os.path.join(STORAGE_ROOT, "4_qdrant_db"))
+SME_QDRANT_PATH = os.getenv("SME_QDRANT_PATH", os.path.join(STORAGE_ROOT, "4_qdrant_db"))
 
 os.makedirs(BACKUP_MD_DIR, exist_ok=True)
-os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
 os.makedirs(SME_BACKUP_MD_DIR, exist_ok=True)
+os.makedirs(BACKUP_PDF_DIR, exist_ok=True)
 os.makedirs(SME_BACKUP_PDF_DIR, exist_ok=True)
-os.makedirs(SME_QDRANT_PATH, exist_ok=True)
+os.makedirs(QDRANT_STORAGE_PATH, exist_ok=True)
 
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -413,15 +426,16 @@ def chat_stream(req: ChatRequest, request: Request):
             res = requests.get("http://127.0.0.1:8003/api/documents/search", params={"q": req.query, "domain": "sme"}, timeout=20)
             if res.status_code == 200:
                 s_data = res.json()
-                results = s_data.get("results", []) or s_data.get("chunks", [])
+                results = s_data if isinstance(s_data, list) else (s_data.get("results", []) or s_data.get("chunks", []))
                 if results:
                     chunk_texts = []
                     for r in results[:6]:
-                        s_name = r.get("source_file") or r.get("file_name", "SME Knowledge Base")
-                        p_label = r.get("page_label") or r.get("page_no", 1)
-                        c_text = r.get("text", "")
-                        chunk_texts.append(f"[{s_name} - Page {p_label}]\n{c_text}")
-                        retrieved_sources.append({"file_name": s_name, "page": p_label, "text": c_text[:150]})
+                        s_name = r.get("file_name") or r.get("source_file", "SME Document")
+                        snippets = r.get("snippets", [])
+                        c_text = "\n".join(snippets) if snippets else r.get("text", "")
+                        if c_text:
+                            chunk_texts.append(f"[{s_name}]\n{c_text}")
+                            retrieved_sources.append({"file_name": s_name, "page": 1, "text": c_text[:150]})
                     knowledge_context = "\n\n".join(chunk_texts)
         except Exception as s_err:
             logging.warning(f"SME knowledge base search fallback: {s_err}")
@@ -499,12 +513,13 @@ def chat_stream(req: ChatRequest, request: Request):
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     def generate_v2():
-        # Proxy to final_rag (port 8003)
+        # Proxy to final_rag (port 8003) with full Hybrid Qdrant Vector Retrieval + GPU Reranking
         try:
+            is_cloud = req.use_claude or (req.model in ["claude-3-5-sonnet", "claude", "cloud", "gemini"])
             res = requests.post("http://127.0.0.1:8003/chat/stream", json={
                 "query": req.query,
                 "session_id": session_id,
-                "use_claude": req.use_claude or (req.model == "cloud"),
+                "use_claude": is_cloud,
                 "model": req.model
             }, stream=True, timeout=900)
             
@@ -522,12 +537,11 @@ def chat_stream(req: ChatRequest, request: Request):
                             pass
             
             complete_answer = "".join(full_answer).strip()
-            # We don't call append_message here because final_rag/api.py already saves the assistant message with metadata
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-    if clean_domain == "sme" or req.model in ["claude-3-5-sonnet", "sme", "claude"]:
+    if clean_domain == "sme":
         generator = generate_sme()
     elif req.model == "version1":
         generator = generate_v1()
@@ -578,24 +592,46 @@ def backup_markdown_file(filename: str, rag_version: str, domain: str = "msme"):
                 backup_dest = os.path.join(target_dest_dir, f"{stem}{v_suffix}_{ts}.md")
             shutil.copy2(md_source, backup_dest)
             logging.info(f"Backed up md [{clean_domain}] to: {backup_dest}")
+
+            # Upload to AWS S3
+            if upload_file_to_s3:
+                try:
+                    s3_md_key = f"1_markdown_storage/{clean_domain}/backup/{os.path.basename(backup_dest)}"
+                    upload_file_to_s3(backup_dest, s3_md_key, content_type="text/markdown")
+                except Exception as s3_md_err:
+                    logging.warning(f"S3 markdown upload skipped: {s3_md_err}")
         else:
             logging.warning(f"No .md source file found for backup of {filename}")
     except Exception as backup_err:
         logging.error(f"Failed to create backup for {filename}: {backup_err}")
 
-def backup_pdf_file(filename: str, file_content: bytes, domain: str = "msme") -> str:
-    """Save original PDF to backup_pdf directory (MSME or SME) and return the backup file path."""
+def backup_pdf_file(filename: str, file_content: bytes, domain: str = "msme"):
+    """Save original PDF to backup_pdf directory and S3 (MSME or SME) and return (local_path, s3_key)."""
+    clean_domain = (domain or "msme").lower()
+    target_dir = SME_BACKUP_PDF_DIR if clean_domain == "sme" else BACKUP_PDF_DIR
+    pdf_dest = os.path.join(target_dir, filename)
+    s3_key = f"2_pdf_storage/{clean_domain}/backup/{filename}"
     try:
-        clean_domain = (domain or "msme").lower()
-        target_dir = SME_BACKUP_PDF_DIR if clean_domain == "sme" else BACKUP_PDF_DIR
-        pdf_dest = os.path.join(target_dir, filename)
         with open(pdf_dest, "wb") as f:
             f.write(file_content)
         logging.info(f"Backed up PDF [{clean_domain}] to: {pdf_dest}")
-        return pdf_dest
     except Exception as err:
-        logging.error(f"Failed to backup PDF {filename}: {err}")
-        return ""
+        logging.error(f"Failed to backup PDF {filename} locally: {err}")
+
+    # S3 Upload
+    if upload_file_to_s3:
+        try:
+            if upload_file_to_s3(pdf_dest, s3_key, content_type="application/pdf"):
+                logging.info(f"Uploaded PDF [{clean_domain}] to S3: {s3_key}")
+            else:
+                s3_key = None
+        except Exception as s3_err:
+            logging.warning(f"S3 PDF upload skipped: {s3_err}")
+            s3_key = None
+    else:
+        s3_key = None
+
+    return pdf_dest, s3_key
 
 def process_upload_background(task_id: str, filename: str, file_content: bytes, content_type: str, buildGraph: bool, rag_version: str,
                                doc_type: str = "PDF", source: str = "public", source_description: str = "", creation_date: str = "", domain: str = "msme"):
@@ -624,8 +660,8 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
             else:
                 upload_tasks[task_id] = {"status": "success", "data": data}
 
-                # ── Save PDF to backup_pdf ──
-                pdf_backup_path = backup_pdf_file(filename, file_content, domain=clean_domain)
+                # ── Save PDF to backup_pdf and AWS S3 ──
+                pdf_backup_path, s3_key = backup_pdf_file(filename, file_content, domain=clean_domain)
 
                 # ── Save metadata to MongoDB ──
                 try:
@@ -641,13 +677,13 @@ def process_upload_background(task_id: str, filename: str, file_content: bytes, 
                         file_hash=file_hash,
                         pdf_path=f"doc_input/{filename}" if rag_version in ["v2", "version2"] else f"pdf_storage/{filename}",
                         pdf_backup_path=pdf_backup_path,
-                        s3_key=None,
+                        s3_key=s3_key,
                         domain=clean_domain,
                     )
                 except Exception as meta_err:
                     logging.error(f"[Background Task {task_id}] Failed to save metadata: {meta_err}")
 
-                # ── Copy .md to backup_markdown/ (immutable archive) ──
+                # ── Copy .md to backup_markdown/ and AWS S3 ──
                 backup_markdown_file(filename, rag_version, domain=clean_domain)
         else:
             logging.error(f"[Background Task {task_id}] Downstream error: status={res.status_code} body={res.text[:500]}")
@@ -807,8 +843,11 @@ def get_document_pdf_route(file_name: str, page: int = Query(None)):
 
         directories = [
             Path(BACKUP_PDF_DIR),
-            Path(RUNPOD_VOLUME) / "pdf_storage",
-            Path(RUNPOD_VOLUME) / "backup_pdf",
+            Path(SME_BACKUP_PDF_DIR),
+            Path(STORAGE_ROOT) / "2_pdf_storage" / "msme" / "rag2",
+            Path(STORAGE_ROOT) / "2_pdf_storage" / "sme" / "rag2",
+            Path(STORAGE_ROOT) / "2_pdf_storage" / "msme" / "rag1",
+            Path(STORAGE_ROOT) / "2_pdf_storage" / "sme" / "rag1",
             base_dir / "backup_pdf",
             base_dir / "final_rag" / "doc_input",
             base_dir / "final_rag" / "pdf_storage",
@@ -859,6 +898,36 @@ def get_document_pdf_route(file_name: str, page: int = Query(None)):
             except Exception as dir_err:
                 logging.warning(f"Error reading directory {d} for PDF search: {dir_err}")
 
+        # S3 Direct Stream Fallback
+        if stream_s3_file_bytes:
+            for s3_candidate_prefix in ["2_pdf_storage/msme/backup", "2_pdf_storage/sme/backup", "2_pdf_storage/msme/rag2", "2_pdf_storage/sme/rag2"]:
+                s3_key = f"{s3_candidate_prefix}/{file_name}"
+                try:
+                    s3_bytes = stream_s3_file_bytes(s3_key)
+                    if s3_bytes:
+                        if page is not None and page > 0:
+                            doc = fitz.open(stream=s3_bytes, filetype="pdf")
+                            page_num = page - 1
+                            if 0 <= page_num < len(doc):
+                                new_doc = fitz.open()
+                                new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
+                                pdf_bytes = new_doc.write()
+                                new_doc.close()
+                                doc.close()
+                                return StreamingResponse(
+                                    io.BytesIO(pdf_bytes),
+                                    media_type="application/pdf",
+                                    headers={"Content-Disposition": f"inline; filename=\"page_{page}_{file_name}\""}
+                                )
+                            doc.close()
+                        return StreamingResponse(
+                            io.BytesIO(s3_bytes),
+                            media_type="application/pdf",
+                            headers={"Content-Disposition": f"inline; filename=\"{file_name}\""}
+                        )
+                except Exception as s3_stream_err:
+                    logging.warning(f"S3 fallback stream failed for '{s3_key}': {s3_stream_err}")
+
         raise HTTPException(status_code=404, detail=f"PDF file '{file_name}' not found")
     except HTTPException:
         raise
@@ -871,8 +940,9 @@ def debug_pdf_paths():
     base_dir = Path(__file__).parent.resolve()
     directories = {
         "BACKUP_PDF_DIR": BACKUP_PDF_DIR,
-        "runpod_volume_pdf_storage": str(Path(RUNPOD_VOLUME) / "pdf_storage"),
-        "runpod_volume_backup_pdf": str(Path(RUNPOD_VOLUME) / "backup_pdf"),
+        "SME_BACKUP_PDF_DIR": SME_BACKUP_PDF_DIR,
+        "storage_root_pdf_msme_rag2": str(Path(STORAGE_ROOT) / "2_pdf_storage" / "msme" / "rag2"),
+        "storage_root_pdf_sme_rag2": str(Path(STORAGE_ROOT) / "2_pdf_storage" / "sme" / "rag2"),
         "backup_pdf": str(base_dir / "backup_pdf"),
         "doc_input": str(base_dir / "final_rag" / "doc_input"),
         "final_rag_pdf_storage": str(base_dir / "final_rag" / "pdf_storage"),
