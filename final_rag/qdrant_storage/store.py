@@ -59,7 +59,7 @@ class QdrantManager:
     ):
         self.storage_path = Path(storage_path or getattr(config, "QDRANT_STORAGE_PATH", "./qdrant_db"))
         self.default_collection = default_collection or getattr(config, "QDRANT_COLLECTION_NAME", "rag_documents")
-        self.dimensions = dimensions or getattr(config, "EMBED_DIMENSIONS", 1536)
+        self.dimensions = dimensions or getattr(config, "EMBED_DIMENSIONS", 2560)
         self._client: Optional[QdrantClient] = None
         self._initialized_collections: set[str] = set()
 

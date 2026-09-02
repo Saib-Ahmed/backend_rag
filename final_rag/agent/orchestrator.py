@@ -264,7 +264,15 @@ class Orchestrator:
     @staticmethod
     def _build_metadata_payload(sources: list[SourceInfo]) -> str:
         try:
-            return f"__METADATA__:{json.dumps([s.model_dump() for s in sources])}"
+            payload = [
+                {
+                    **s.model_dump(),
+                    "source_file": s.file_name,
+                    "page_no": int(s.pages[0]) if s.pages and s.pages[0].isdigit() else 1,
+                }
+                for s in sources
+            ]
+            return f"__METADATA__:{json.dumps(payload)}"
         except Exception as e:
             logger.error("[Orchestrator] Metadata serialization failed: %s", e)
             return ""

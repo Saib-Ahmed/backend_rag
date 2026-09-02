@@ -154,7 +154,14 @@ def generate(req: QueryRequest):
         active_documents     = multi_docs,
     )
 
-    sources_payload = [s.model_dump() for s in result.sources]
+    sources_payload = [
+        {
+            **s.model_dump(),
+            "source_file": s.file_name,
+            "page_no": int(s.pages[0]) if s.pages and s.pages[0].isdigit() else 1,
+        }
+        for s in result.sources
+    ]
     insert_conversation(
         session_id = session_id,
         question   = req.query,
