@@ -1,5 +1,9 @@
 """
-prompts/cleaner_prompt.py
+final_rag/prompts/cleaner_prompt.py
+
+Prompt templates for QueryCleaner: intent detection (chitchat vs query),
+signal extraction (scope, answer_structure, specificity, filter_hints, comparison_arms),
+and subquery generation.
 """
 
 CLEANER_SYSTEM_PROMPT = """
@@ -10,101 +14,53 @@ If the query contains any non-English words or mixed language (Hinglish):
 - Translate the full query to English for improved_query (used for retrieval)
 - Preserve all legal, technical, and domain-specific terms exactly as written
 - Only translate conversational and connecting words
-- - Detect the original language: "hindi" (Devanagari), "hinglish" (Roman+Hindi), or "english"
+- Detect the original language: "hindi" (Devanagari), "hinglish" (Roman+Hindi), or "english"
 - IMPORTANT: If the query uses Roman script with any Hindi words (e.g. "ke tahat", "kya hai", "kyun", "aur") → it is ALWAYS "hinglish", never "hindi" or "english"
 - Apply the translated version as the base for all rules below
 
---- RULE 1: IMPROVE THE QUERY ---
+--- RULE 1: DETECT INTENT ---
+Before extracting anything else, classify intent:
+- "chitchat"        → greetings, thanks, small talk, meta-questions about the assistant itself ("who are you", "what can you do", "how does this work"), or anything with no document-retrieval need at all
+- "document_query"  → anything that could plausibly be answered from the uploaded knowledge base — including vague/broad topic questions
+
+--- RULE 2: IMPROVE THE QUERY ---
 Rewrite the query as improved_query following these strict rules:
 - Correct grammar and spelling only
 - Preserve every noun, name, and technical term exactly as the user wrote it
 - Never infer, expand, or reinterpret what a word means
 - Only add words that are grammatically necessary
-- When in doubt, change as little as possible
 
---- RULE 2: EXTRACT 3 SIGNALS ---
-
-SIGNAL A — target_scope
-How many documents is this query about?
+--- RULE 3: EXTRACT 3 SIGNALS ---
+SIGNAL A — target_scope:
 - "single"  → user points at one specific document (mentions filename, court+year, specific case)
 - "few"     → user mentions 2-4 specific documents or asks to compare named sources
 - "broad"   → no specific document mentioned, could be anywhere in the corpus
 
-Examples:
-- "section 18 in delhi HC 2025 file"              → single
-- "compare mp policies 2022 vs 2023"              → few
-- "what is section 18"                            → broad
-- "arbitration rules in SC delhi and SC gujarat"  → few
-
-SIGNAL B — answer_structure
-How should the answer be structured?
+SIGNAL B — answer_structure:
 - "direct"     → one focused answer expected
 - "compare"    → parallel structure, one section per document/entity
 - "synthesize" → aggregate across many sources, note differences
 
-Examples:
-- "what is section 18 in delhi HC"        → direct
-- "compare mp policies 2022 vs 2023"      → compare
-- "what is section 18" (broad)            → synthesize
-- "summarize all 2024 judgements"         → synthesize
-
-SIGNAL C — specificity
-How precisely is the target defined?
+SIGNAL C — specificity:
 - "high"   → section number, case name, exact term, article number
 - "medium" → topic + domain (e.g. "arbitration rules in SC")
 - "low"    → generic concept, no specific identifiers
 
---- RULE 3: EXTRACT FILTER HINTS ---
-Extract these fields directly from the query text. Only include what is explicitly mentioned.
+--- RULE 4: EXTRACT FILTER HINTS ---
 - doc_year         → 4-digit year if mentioned (e.g. "2025")
 - filename_tokens  → words that identify a document (court name, city, org, file name parts)
 - section          → section/article/clause number if mentioned (e.g. "section 18", "article 21")
 - keywords         → important domain terms (laws, acts, topics, organisations, technologies, products, concepts)
 
-Examples:
-- ["machine learning", "OpenAI", "inflation"]
-- ["Section 18", "MSMED Act", "arbitration"]
-- ["Docker", "Kubernetes", "microservices"]
+--- RULE 5: EXTRACT COMPARISON ARMS ---
+Only when answer_structure is "compare". Maximum 4 arms.
 
-If nothing found for a field, omit it from filter_hints.
-
---- RULE 4: EXTRACT COMPARISON ARMS ---
-Only when answer_structure is "compare".
-Extract each named document or entity as a separate arm. Maximum 4 arms.
-Each arm must have:
-- label           → short human readable name (e.g. "MP Policy 2022")
-- year            → if mentioned
-- filename_tokens → words identifying that specific document
-
-If answer_structure is not "compare", return empty list for comparison_arms.
-
---- RULE 5: GENERATE SUBQUERIES ---
-Always generate subqueries for retrieval — regardless of scope or structure.
-
-If target_scope is "single" or specificity is "high" → generate exactly 5 subqueries
-If target_scope is "few" or "broad"                  → generate exactly 10 subqueries
-
-Decompose from these angles:
-1. Core definition — what is the primary subject?
-2. Measurement    — how is it measured or evaluated?
-3. Comparison     — how does one part differ from another?
-4. Cause          — why does this happen or exist?
-5. Effect         — what are the outcomes or consequences?
-6. Process        — how does it work step by step?
-7. Context        — in what conditions or domains does this apply?
-8. Examples       — what are concrete real-world instances?
-9. Limitations    — what are the failures, gaps, or exceptions?
-10. Relationship  — how do the parts connect?
-
-Rules:
-- Every subquery must be directly answerable from the main query topic
-- Every subquery must be distinct
-- Do NOT assign weights — calculated externally
-- Do NOT add context the user did not ask for
+--- RULE 6: GENERATE SUBQUERIES ---
+Decompose from core definition, measurement, comparison, cause, effect, process, context, examples, limitations, relationships.
 
 --- OUTPUT FORMAT ---
-
 {
+  "intent":            "chitchat" | "document_query",
   "improved_query":    "<minimally corrected query in English>",
   "detected_language": "hindi" | "hinglish" | "english",
   "target_scope":      "single" | "few" | "broad",
@@ -124,8 +80,7 @@ Rules:
     }
   ],
   "subqueries": [
-    {"query": "<subquery>"},
-    ...
+    {"query": "<subquery>"}
   ]
 }
 

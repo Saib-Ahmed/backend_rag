@@ -1,17 +1,19 @@
 """
-api.py
-FastAPI — RAG Pipeline Gateway
+final_rag/api.py
+
+FastAPI — RAG Pipeline Gateway for final_rag (MSME & Legal Document Intelligence).
+Integrated with Gemini Multimodal OCR, GLiNER 2.5 entity chunking, Qwen3 Hybrid retrieval,
+active document routing, and MongoDB Atlas for session & document management.
 """
 
 import sys
-# Mock torchcodec to prevent import runtime crashes in environments with missing FFmpeg
 sys.modules['torchcodec'] = None
 
 import json
 import logging
 import os
 import uuid
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
@@ -27,6 +29,7 @@ from final_rag.agent.grounding_checker import get_grounding_checker
 from final_rag.ingestion.embedder import get_embedder
 from final_rag.ingestion.parser import DocumentParser
 from final_rag.ingestion.chunker import DocumentChunker
+from final_rag.ingestion.chunker_metadata import build_chunk_meta_batch
 from final_rag.db.database import (
     create_tables,
     fetch_all_sessions,
@@ -51,864 +54,359 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api")
 
-app = FastAPI(title="c-net RAG API", version="1.0.0")
+app = FastAPI(title="c-net RAG API", version="2.0.0")
 
 
 @app.get("/ping")
 def ping():
     return {"status": "ok"}
 
-_raw_origins    = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
+
+_raw_origins    = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8081")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",")]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ALLOWED_ORIGINS,
-    allow_credentials = True,
-    allow_methods     = ["*"],
-    allow_headers     = ["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
+# ── Pipeline Singletons ───────────────────────────────────────────────────────
+db               = QdrantManager()
+embedder         = get_embedder(db)
+orchestrator     = get_orchestrator(embedder)
+doc_parser       = DocumentParser()
+doc_chunker      = DocumentChunker()
+try:
+    grounding_checker = get_grounding_checker()
+except Exception as e:
+    logger.warning("Grounding checker initialization skipped: %s", e)
+    grounding_checker = None
 
-# ── Globals ────────────────────────────────────────────────────────────
-db                = None
-embedder          = None
-orchestrator      = None
-doc_parser        = None
-doc_chunker       = None
-grounding_checker = None
 
-
-# ── Startup ────────────────────────────────────────────────────────────
 @app.on_event("startup")
 def startup():
-    global db, embedder, orchestrator, doc_parser, doc_chunker, grounding_checker
     create_tables()
-
-    db                = QdrantManager()
-    db.setup_database()
-    embedder          = get_embedder(db=db)
-    orchestrator      = get_orchestrator(embedder=embedder)
-    doc_parser        = DocumentParser(output_dir=config.MD_OUTPUT_DIR)
-    doc_chunker       = DocumentChunker()
-    grounding_checker = get_grounding_checker()
-
-    # Cleanup stuck records from previous crashed runs
     cleanup_stuck_documents()
-    logger.info("Cleaned up stuck processing records on startup")
-
-    logger.info("API Ready | CORS origins: %s", ALLOWED_ORIGINS)
+    logger.info("final_rag API startup complete | Collections & MongoDB tables ready.")
 
 
-# ── Shutdown ───────────────────────────────────────────────────────────
-@app.on_event("shutdown")
-def shutdown():
-    logger.info("API shutting down, explicitly clearing memory and connections...")
-    global db, embedder
-    try:
-        if db and hasattr(db, "client") and db.client:
-            db.client.close()
-    except Exception as e:
-        logger.error("Error closing Qdrant: %s", e)
-
-    try:
-        if embedder and hasattr(embedder, "close"):
-            embedder.close()
-    except Exception as e:
-        logger.error("Error closing embedder client: %s", e)
-
-    import gc
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("CUDA cache cleared.")
-    except ImportError:
-        pass
+# ── Request Models ────────────────────────────────────────────────────────────
+class QueryRequest(BaseModel):
+    query:                str
+    session_id:           Optional[str] = None
+    stream:               bool          = False
+    use_claude:           bool          = True
+    model:                Optional[str] = None
+    active_doc_id:        Optional[str] = None
+    active_doc_filename:  Optional[str] = None
+    active_doc_ids:       Optional[List[str]] = None
+    active_doc_filenames: Optional[List[str]] = None
+    active_documents:     Optional[List[str]] = None
+    files:                Optional[List[Dict[str, Any]]] = None
 
 
-def _clear_gpu_and_gc():
-    import gc
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("[Memory] CUDA cache cleared.")
-    except ImportError:
-        pass
+def _resolve_active_docs(req: QueryRequest) -> tuple[Optional[str], List[str]]:
+    single_doc = req.active_doc_filename
+    multi_docs = list(req.active_doc_filenames or req.active_documents or [])
+
+    if req.files:
+        extracted = [f.get("name") for f in req.files if isinstance(f, dict) and f.get("name")]
+        if len(extracted) == 1 and not single_doc:
+            single_doc = extracted[0]
+        elif len(extracted) > 1:
+            multi_docs.extend(extracted)
+
+    return single_doc, list(set(multi_docs))
 
 
-# ── Request schemas ────────────────────────────────────────────────────
-class ChatRequest(BaseModel):
-    session_id: str
-    query:      str
-    use_claude: bool = False
-    model:      Optional[str] = None
+# ── POST /api/v2/generate (and /chat) ─────────────────────────────────────────
+@app.post("/api/v2/generate")
+@app.post("/api/generate")
+@app.post("/chat")
+def generate(req: QueryRequest):
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
-
-class RenameTitleRequest(BaseModel):
-    title: str
-
-
-# ── POST /upload ───────────────────────────────────────────────────────
-import hashlib
-
-@app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
-
-    existing_doc = get_document_by_filename(file.filename)
-    if existing_doc:
-        logger.info("File already exists by filename, skipping: %s", file.filename)
-        return {
-            "status":  "already_exists",
-            "message": "File is already stored in the database.",
-        }
-
-    try:
-        file_bytes = await file.read()
-    except Exception as e:
-        logger.error("Failed to read uploaded file: %s", e)
-        raise HTTPException(status_code=500, detail="Could not read file.")
-
-    file_hash = hashlib.md5(file_bytes).hexdigest()
-    existing_hash_doc = get_document_by_hash(file_hash)
-    if existing_hash_doc:
-        logger.info("Identical file content already exists: %s (existing: %s)", file.filename, existing_hash_doc.get("file_name"))
-        return {
-            "status":  "already_exists",
-            "message": f"Identical content is already stored under filename '{existing_hash_doc.get('file_name')}'.",
-        }
-
-    doc_id   = str(uuid.uuid4())
-    doc_type = Path(file.filename).suffix.lower()
-
-    try:
-        insert_document(
-            document_id = doc_id,
-            file_name   = file.filename,
-            doc_type    = doc_type,
-            file_data   = file_bytes,
-            status      = "processing",
-            file_hash   = file_hash,
-        )
-    except Exception as e:
-        logger.error("Failed to create document placeholder: %s", e)
-        raise HTTPException(status_code=500, detail="Database error.")
-
-    try:
-        logger.info("Starting ingestion for: %s", file.filename)
-
-        parsed_result = await run_in_threadpool(lambda: doc_parser.parse_bytes(file_bytes, file.filename))
-        if not parsed_result.success:
-            raise Exception(f"Parsing failed: {parsed_result.error}")
-
-        chunks = await run_in_threadpool(lambda: doc_chunker.chunk(parsed_result))
-        await run_in_threadpool(lambda: embedder.embed_and_store(chunks))
-
-        update_document_status(file.filename, "ingested")
-
-        logger.info("Successfully ingested: %s", file.filename)
-        _clear_gpu_and_gc()
-        return {
-            "status":      "success",
-            "message":     "File successfully uploaded and processed.",
-            "document_id": doc_id,
-            "file_name":   file.filename,
-        }
-
-    except Exception as e:
-        logger.error("Upload pipeline failed for %s: %s", file.filename, e)
-
-        try:
-            db.delete_document(file.filename)
-        except Exception as rollback_err:
-            logger.critical(
-                "CRITICAL: Qdrant rollback failed for %s: %s — manual cleanup needed",
-                file.filename, rollback_err,
-            )
-
-        try:
-            update_document_status(file.filename, "failed")
-        except Exception:
-            pass
-
-        _clear_gpu_and_gc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /chat/stream ──────────────────────────────────────────────────
-@app.post("/chat/stream")
-def chat_stream(req: ChatRequest):
-    history_turns = fetch_conversation_history(req.session_id, limit=6)
+    session_id = req.session_id or str(uuid.uuid4())
+    raw_history = fetch_conversation_history(session_id)
     history = [
-        {"question": turn.question, "answer": turn.answer}
-        for turn in history_turns
+        {"question": h.question, "answer": h.answer}
+        for h in raw_history
     ]
-    # Remove the very last message if it matches the current query, to prevent LLM seeing it twice
-    if history and history[-1]["question"] == req.query and not history[-1]["answer"]:
-        history.pop()
+
+    single_doc, multi_docs = _resolve_active_docs(req)
+
+    result = orchestrator.run(
+        query                = req.query,
+        history              = history,
+        active_doc_id        = req.active_doc_id,
+        active_doc_filename  = single_doc,
+        active_doc_ids       = req.active_doc_ids,
+        active_doc_filenames = multi_docs,
+        active_documents     = multi_docs,
+    )
+
+    sources_payload = [s.model_dump() for s in result.sources]
+    insert_conversation(
+        session_id = session_id,
+        question   = req.query,
+        answer     = result.answer,
+        sources    = sources_payload,
+    )
+
+    return {
+        "session_id":     session_id,
+        "query":          req.query,
+        "answer":         result.answer,
+        "sources":        sources_payload,
+        "cleaned_query":  result.cleaned_query,
+        "pipeline_times": result.pipeline_times,
+        "total_time_sec": result.total_time_sec,
+    }
+
+
+# ── POST /api/v2/generate/stream (and /chat/stream) ───────────────────────────
+@app.post("/api/v2/generate/stream")
+@app.post("/api/generate/stream")
+@app.post("/chat/stream")
+def generate_stream(req: QueryRequest):
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+
+    session_id = req.session_id or str(uuid.uuid4())
+    raw_history = fetch_conversation_history(session_id)
+    history = [
+        {"question": h.question, "answer": h.answer}
+        for h in raw_history
+    ]
+
+    single_doc, multi_docs = _resolve_active_docs(req)
 
     def event_generator():
-        full_answer    = []
-        metadata_chunk = ""
-        sources_list   = None
-        source_name    = ""
-        page_label     = ""
-        page_no        = 0
-        stream_error   = None
+        collected_tokens = []
+        metadata_payload = None
 
-        try:
-            for token in orchestrator.run(
-                query           = req.query,
-                history         = history,
-                active_document = None,
-                use_claude      = req.use_claude,
-                model           = req.model,
-            ):
-                if token.startswith("__METADATA__:"):
-                    metadata_chunk = token
-                    try:
-                        _, metadata_part = token.split("__METADATA__:")
-                        sources_list = json.loads(metadata_part.strip())
-                        yield f"data: {json.dumps({'metadata': sources_list})}\n\n"
-                    except Exception as parse_err:
-                        logger.error("Failed to yield metadata: %s", parse_err)
-                    continue
-                full_answer.append(token)
-                yield f"data: {json.dumps({'token': token})}\n\n"
+        token_stream = orchestrator.stream(
+            query                = req.query,
+            history              = history,
+            active_doc_id        = req.active_doc_id,
+            active_doc_filename  = single_doc,
+            active_doc_ids       = req.active_doc_ids,
+            active_doc_filenames = multi_docs,
+            active_documents     = multi_docs,
+        )
 
-        except Exception as e:
-            logger.error("Streaming error: %s", e)
-            stream_error = str(e)
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        for chunk in token_stream:
+            if chunk.startswith("__METADATA__:"):
+                metadata_payload = chunk[len("__METADATA__:"):]
+                yield f"event: metadata\ndata: {metadata_payload}\n\n"
+            else:
+                collected_tokens.append(chunk)
+                yield f"data: {json.dumps({'token': chunk})}\n\n"
 
-        complete_answer = "".join(full_answer).strip()
+        full_answer = "".join(collected_tokens)
+        sources = json.loads(metadata_payload) if metadata_payload else []
 
-        # ── Parse sources metadata from the stream ─────────────────────
-        if metadata_chunk:
-            try:
-                _, metadata_part = metadata_chunk.split("__METADATA__:")
-                sources = json.loads(metadata_part.strip())
-                sources_list = sources
-                if sources:
-                    top_source  = sources[0]
-                    source_name = top_source.get("file_name", "")
-                    pages       = top_source.get("pages", [])
-                    if pages:
-                        page_label = str(pages[0])
-                        page_no    = int(pages[0]) if str(pages[0]).isdigit() else 0
-            except Exception as e:
-                logger.error("Failed to parse metadata: %s", e)
-
-        # ── Grounding / Faithfulness Check ─────────────────────────────
-        # Runs AFTER streaming is complete so it adds zero latency to first-token.
-        # Uses Gemini (primary) → NVIDIA Kimi K2.6 (fallback).
-        grounding_result = None
-        if complete_answer and not stream_error and grounding_checker:
-            try:
-                # Extract raw chunk texts from sources metadata
-                chunk_texts = []
-                if sources_list:
-                    for src in sources_list:
-                        for chunk_detail in src.get("chunks", []):
-                            text = chunk_detail.get("text", "").strip()
-                            if text:
-                                chunk_texts.append(text)
-
-                if chunk_texts:
-                    gr = grounding_checker.check(
-                        answer=complete_answer,
-                        chunks=chunk_texts,
-                        query=req.query,
-                    )
-                    grounding_result = gr.to_dict()
-                    logger.info(
-                        "[API] Grounding | verdict=%s score=%.2f provider=%s",
-                        gr.verdict, gr.score, gr.provider,
-                    )
-                    # Emit grounding event to frontend
-                    yield f"data: {json.dumps({'grounding': grounding_result})}\n\n"
-                else:
-                    logger.info("[API] Grounding skipped — no chunk texts in sources metadata.")
-            except Exception as ground_err:
-                logger.error("[API] Grounding check failed: %s", ground_err)
-
-        # ── Persist conversation + grounding verdict ───────────────────
-        try:
-            answer_to_save = (
-                f"[Error: {stream_error}]" if stream_error
-                else complete_answer or "[no answer generated]"
-            )
-            insert_conversation(
-                session_id = req.session_id,
-                question   = req.query,
-                answer     = answer_to_save,
-                source     = source_name,
-                page       = page_no,
-                page_label = page_label,
-                sources    = sources_list,
-                grounding  = grounding_result,
-            )
-        except Exception as e:
-            logger.error("Failed to persist conversation: %s", e)
-
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        insert_conversation(
+            session_id = session_id,
+            question   = req.query,
+            answer     = full_answer,
+            sources    = sources,
+        )
+        yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'metadata': sources, 'sources': sources})}\n\n"
 
     return StreamingResponse(
         event_generator(),
-        media_type = "text/event-stream",
-        headers    = {
+        media_type="text/event-stream",
+        headers={
             "Cache-Control":     "no-cache",
             "X-Accel-Buffering": "no",
+            "Connection":        "keep-alive",
         },
     )
 
 
-# ── GET /sessions ──────────────────────────────────────────────────────
-@app.get("/sessions")
-def get_sessions():
-    sessions = fetch_all_sessions()
-    return [{"id": s.session_id, "title": s.title} for s in sessions]
-
-
-# ── GET /sessions/{session_id}/history ────────────────────────────────
-@app.get("/sessions/{session_id}/history")
-def get_history(session_id: str, limit: int = Query(default=100, le=200)):
-    turns    = fetch_conversation_history(session_id, limit=limit)
-    messages = []
-    for turn in turns:
-        messages.append({"role": "user",      "text": turn.question})
-        messages.append({
-            "role": "assistant",
-            "text": turn.answer,
-            "sources": getattr(turn, "sources", []),
-            "grounding": getattr(turn, "grounding", None)
-        })
-    return {"session_id": session_id, "messages": messages}
-
-
-# ── PATCH /sessions/{session_id}/title ────────────────────────────────
-@app.patch("/sessions/{session_id}/title")
-def rename_session(session_id: str, body: RenameTitleRequest):
-    try:
-        upsert_session_title(session_id, body.title)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return {"session_id": session_id, "title": body.title}
-
-
-# ── DELETE /sessions/{session_id} ─────────────────────────────────────
-@app.delete("/sessions/{session_id}")
-def delete_session_endpoint(session_id: str):
-    try:
-        delete_session(session_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return {"deleted": session_id}
-
-
-# ── DELETE /documents/{file_name} ─────────────────────────────────────
-@app.delete("/documents/{file_name}")
-def delete_document_endpoint(file_name: str):
-    qdrant_deleted   = False
-    postgres_deleted = False
-
-    try:
-        if db:
-            db.delete_document(file_name)
-            qdrant_deleted = True
-            logger.info("Cleared vectors for '%s' from Qdrant.", file_name)
-
-        postgres_deleted = delete_document_record(file_name)
-        if postgres_deleted:
-            logger.info("Deleted '%s' from Database.", file_name)
-        else:
-            logger.warning(
-                "'%s' not found in Database — Qdrant only.", file_name
-            )
-
-        # Delete intermediate .md file
-        try:
-            stem = Path(file_name).stem
-            md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
-            if md_path.exists():
-                md_path.unlink()
-                logger.info("Deleted intermediate md file: %s", md_path)
-        except Exception as file_err:
-            logger.error("Failed to delete intermediate md file for %s: %s", file_name, file_err)
-
-        return {
-            "status":           "success",
-            "message":          f"'{file_name}' purged from pipeline.",
-            "qdrant_deleted":   qdrant_deleted,
-            "postgres_deleted": postgres_deleted,
-        }
-
-    except Exception as e:
-        logger.error("Failed to delete %s: %s", file_name, e)
-
-        if qdrant_deleted and not postgres_deleted:
-            logger.critical(
-                "CORRUPTION: '%s' removed from Qdrant but not Database. "
-                "Manual cleanup required.",
-                file_name,
-            )
-
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/documents")
-def clear_all_documents_endpoint():
-    try:
-        # 1. Delete and setup the database collection fresh to clear it completely and safely
-        db.client.delete_collection(db.collection_name)
-        db.setup_database()
-        qdrant_cleared = True
-    except Exception as e:
-        logger.error("Failed to clear Qdrant collection: %s", e)
-        qdrant_cleared = False
-
-    try:
-        # 2. Truncate the Database documents table
-        postgres_cleared = clear_all_documents()
-    except Exception as e:
-        logger.error("Failed to truncate Database documents: %s", e)
-        postgres_cleared = False
-
-    try:
-        # 3. Clear all intermediate .md files from cache folder
-        for md_file in config.MD_OUTPUT_DIR.glob("*.md"):
-            try:
-                md_file.unlink()
-            except Exception as file_err:
-                logger.error("Failed to delete md file %s: %s", md_file, file_err)
-    except Exception as e:
-        logger.error("Failed to clear md_output folder: %s", e)
-
-    return {
-        "status": "success",
-        "message": "All documents cleared.",
-        "qdrant_cleared": qdrant_cleared,
-        "postgres_cleared": postgres_cleared,
-    }
-
-
-# ── GET /documents ─────────────────────────────────────────────────────
-@app.get("/documents")
-def list_documents_endpoint():
-    try:
-        return list_documents()
-    except Exception as e:
-        logger.error("Failed to list documents: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-class DocumentContentUpdate(BaseModel):
-    content: str
-
-@app.get("/api/documents/search")
-def search_documents(q: str = Query(..., min_length=1)):
-    query_lower = q.lower()
-    results = []
-    
-    md_dir = config.MD_OUTPUT_DIR
-    if not md_dir.exists():
-        return results
-        
-    for md_path in md_dir.glob("*.md"):
-        file_name = md_path.stem + ".pdf"
-        matches = 0
-        snippets = []
-        
-        name_match = query_lower in file_name.lower()
-        if name_match:
-            matches += 1
-            
-        try:
-            content = md_path.read_text(encoding="utf-8")
-            import re
-            content_lower = content.lower()
-            for match in re.finditer(re.escape(query_lower), content_lower):
-                matches += 1
-                match_start = match.start()
-                match_end = match.end()
-                
-                para_start = content.rfind("\n\n", 0, match_start)
-                if para_start == -1:
-                    para_start = 0
-                else:
-                    para_start += 2
-                    
-                para_end = content.find("\n\n", match_end)
-                if para_end == -1:
-                    para_end = len(content)
-                    
-                paragraph = content[para_start:para_end].strip()
-                
-                if len(paragraph) > 400:
-                    rel_start = match_start - para_start
-                    rel_end = match_end - para_start
-                    
-                    crop_start = max(0, rel_start - 180)
-                    crop_end = min(len(paragraph), rel_end + 180)
-                    
-                    snippet_text = paragraph[crop_start:crop_end].strip()
-                    if crop_start > 0:
-                        snippet_text = "... " + snippet_text
-                    if crop_end < len(paragraph):
-                        snippet_text = snippet_text + " ..."
-                else:
-                    snippet_text = paragraph
-                
-                snippet_clean = re.sub(r'\s+', ' ', snippet_text).strip()
-                if snippet_clean and snippet_clean not in snippets:
-                    snippets.append(snippet_clean)
-        except Exception:
-            pass
-            
-        if matches > 0:
-            results.append({
-                "file_name": file_name,
-                "matches": matches,
-                "snippets": snippets
-            })
-            
-    return results
-
-@app.get("/api/documents/{file_name}/content")
-def get_document_content(file_name: str):
-    stem = Path(file_name).stem
-    md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
-    if not md_path.exists():
-        # Fallback: Reconstruct from Qdrant chunks
-        try:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            points, _ = db.client.scroll(
-                collection_name=db.collection_name,
-                scroll_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="source_file",
-                            match=MatchValue(value=file_name),
-                        )
-                    ]
-                ),
-                limit=10000,
-                with_payload=["chunk_index", "text"],
-                with_vectors=False,
-            )
-            if points:
-                sorted_points = sorted(points, key=lambda p: p.payload.get("chunk_index", 0))
-                reconstructed_content = "\n\n".join([p.payload.get("text", "") for p in sorted_points])
-                try:
-                    config.MD_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-                    md_path.write_text(reconstructed_content, encoding="utf-8")
-                except Exception as save_err:
-                    logger.warning("Failed to save reconstructed markdown cache: %s", save_err)
-                return {"file_name": file_name, "content": reconstructed_content}
-        except Exception as e:
-            logger.error("Failed to reconstruct document from Qdrant: %s", e)
-        raise HTTPException(status_code=404, detail="Content not found")
-    content = md_path.read_text(encoding="utf-8")
-    return {"file_name": file_name, "content": content}
-
-@app.get("/documents/{file_name}/pdf")
-@app.get("/api/documents/{file_name}/pdf")
-def get_document_pdf(file_name: str):
-    # Check doc_input, pdf_storage, and backup_pdf
-    candidates = [
-        config.DOC_INPUT_DIR / file_name,
-        config.PDF_STORAGE_DIR / file_name,
-        Path(__file__).parent.parent / "backup_pdf" / file_name,
-    ]
-    for p in candidates:
-        if p.exists() and p.is_file():
-            return FileResponse(
-                path=str(p),
-                media_type="application/pdf",
-                filename=file_name,
-                headers={"Content-Disposition": f"inline; filename=\"{file_name}\""}
-            )
-    raise HTTPException(status_code=404, detail=f"PDF file for '{file_name}' not found")
-
-@app.put("/api/documents/{file_name}/content")
-def update_document_content(file_name: str, payload: DocumentContentUpdate):
-    stem = Path(file_name).stem
-    md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
-    
-    md_path.parent.mkdir(exist_ok=True, parents=True)
-    md_path.write_text(payload.content, encoding="utf-8")
-    
-    try:
-        db.delete_document(file_name)
-    except Exception as e:
-        logger.error("Error deleting old chunks for %s: %s", file_name, e)
-        
-    try:
-        from final_rag.ingestion.parser import ParseResult, BlockRecord, DocumentMeta, ExtractionMethod
-        import hashlib
-        import re
-        
-        file_hash = hashlib.md5(payload.content.encode('utf-8')).hexdigest()
-        
-        meta = DocumentMeta(
-            doc_id=file_hash[:12],
-            file_name=file_name,
-            file_path=str(md_path),
-            file_type=".md",
-            file_size_kb=len(payload.content) / 1024,
-            page_count=1,
-            has_tables=False,
-            parse_success=True,
-            filename_tokens=re.split(r'[_\-\\s]+', stem.lower()),
-        )
-        
-        blocks = [BlockRecord(block_type="text", content=payload.content, page_no=1, page_label="1")]
-        
-        parse_res = ParseResult(
-            file_name=file_name,
-            file_type=".md",
-            method_used=ExtractionMethod.YOLO,
-            markdown=payload.content,
-            meta=meta,
-            total_pages=1,
-            success=True,
-            blocks=blocks,
-            doc_id=meta.doc_id,
-            filename_tokens=meta.filename_tokens
-        )
-        
-        chunks = doc_chunker.chunk(parse_res)
-        embedder.embed_and_store(chunks)
-        
-        doc_record = get_document_by_filename(file_name)
-        if doc_record:
-            update_document_status(doc_record.document_id, "success")
-        
-        return {"status": "success", "chunks_indexed": len(chunks)}
-    except Exception as e:
-        logger.error("Error re-ingesting %s: %s", file_name, e)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /api/documents/preview-parse ──────────────────────────────────
-@app.post("/api/documents/preview-parse")
-async def preview_parse_document(file: UploadFile = File(...)):
-    """Parse a document to markdown in memory without saving or ingesting."""
-    try:
-        file_bytes = await file.read()
-    except Exception as e:
-        logger.error("Failed to read uploaded file for preview: %s", e)
-        raise HTTPException(status_code=500, detail="Could not read file.")
-
-    try:
-        # Use a parser with output_dir=None so _save() is a noop
-        preview_parser = DocumentParser(output_dir=None)
-        parsed_result = await run_in_threadpool(lambda: preview_parser.parse_bytes(file_bytes, file.filename, generate_metadata=False))
-        if not parsed_result.success:
-            raise Exception(f"Parsing failed: {parsed_result.error}")
-
-        _clear_gpu_and_gc()
-        return {
-            "file_name": file.filename,
-            "content": parsed_result.markdown,
-        }
-    except Exception as e:
-        logger.error("Preview parse failed for %s: %s", file.filename, e)
-        _clear_gpu_and_gc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── POST /api/documents/replace ────────────────────────────────────────
-@app.post("/api/documents/replace")
-async def replace_document(
+# ── POST /api/v2/upload ───────────────────────────────────────────────────────
+@app.post("/api/v2/upload")
+@app.post("/api/upload")
+async def upload_document(
     file: UploadFile = File(...),
-    old_file_name: str = Form(...),
+    doc_type: Optional[str] = Form(None),
 ):
-    """Delete an existing document and ingest a new one in its place."""
-    # Step 1: Delete old document from Qdrant
-    try:
-        await run_in_threadpool(lambda: db.delete_document(old_file_name))
-        logger.info("Deleted old vectors for '%s' from Qdrant.", old_file_name)
-    except Exception as e:
-        logger.error("Failed to delete old vectors for %s: %s", old_file_name, e)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided.")
 
-    # Step 2: Delete old document DB record
-    try:
-        await run_in_threadpool(lambda: delete_document_record(old_file_name))
-        logger.info("Deleted old DB record for '%s'.", old_file_name)
-    except Exception as e:
-        logger.error("Failed to delete old DB record for %s: %s", old_file_name, e)
+    file_bytes = await file.read()
+    suffix = Path(file.filename).suffix.lower()
 
-    # Step 3: Delete old .md file
-    try:
-        old_stem = Path(old_file_name).stem
-        old_md_path = config.MD_OUTPUT_DIR / f"{old_stem}.md"
-        if old_md_path.exists():
-            old_md_path.unlink()
-            logger.info("Deleted old md file: %s", old_md_path)
-    except Exception as e:
-        logger.error("Failed to delete old md file for %s: %s", old_file_name, e)
-
-    # Step 4: Ingest the new file (full pipeline: parse → chunk → embed → save md)
-    try:
-        file_bytes = await file.read()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Could not read new file.")
+    if suffix not in config.SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {suffix}. Supported: {config.SUPPORTED_EXTENSIONS}",
+        )
 
     doc_id = str(uuid.uuid4())
-    doc_type = Path(file.filename).suffix.lower()
+    resolved_type = doc_type or suffix.lstrip(".")
 
     try:
         await run_in_threadpool(lambda: insert_document(
-            document_id=doc_id,
-            file_name=file.filename,
-            doc_type=doc_type,
-            file_data=file_bytes,
-            status="processing",
+            document_id = doc_id,
+            file_name   = file.filename,
+            doc_type    = resolved_type,
+            file_data   = file_bytes,
+            status      = "processing",
         ))
     except Exception as e:
-        logger.error("Failed to create document placeholder for %s: %s", file.filename, e)
-        raise HTTPException(status_code=500, detail="Database error.")
+        logger.error("Failed to register document in DB: %s", e)
 
     try:
-        parsed_result = await run_in_threadpool(lambda: doc_parser.parse_bytes(file_bytes, file.filename))
+        # 1. Parse via Gemini Multimodal OCR
+        parsed_result = await run_in_threadpool(
+            lambda: doc_parser.parse_bytes(file_bytes, file.filename)
+        )
         if not parsed_result.success:
-            raise Exception(f"Parsing failed: {parsed_result.error}")
+            raise RuntimeError(f"Parsing failed: {parsed_result.error}")
 
+        # 2. Chunk with semantic boundaries & tables
         chunks = await run_in_threadpool(lambda: doc_chunker.chunk(parsed_result))
-        await run_in_threadpool(lambda: embedder.embed_and_store(chunks))
-        await run_in_threadpool(lambda: update_document_status(file.filename, "ingested"))
+        if not chunks:
+            raise RuntimeError("Document yielded 0 embeddable chunks.")
 
-        logger.info("Successfully replaced '%s' with '%s' (%d chunks)", old_file_name, file.filename, len(chunks))
-        _clear_gpu_and_gc()
+        # 3. Enrich chunks with GLiNER entities & metadata
+        metas = await run_in_threadpool(
+            lambda: build_chunk_meta_batch(chunks, parsed_result.meta)
+        )
+
+        # 4. Embed & Store into Qdrant
+        await run_in_threadpool(
+            lambda: embedder.embed_and_store(chunks, metas)
+        )
+
+        # 5. Mark as indexed in MongoDB
+        await run_in_threadpool(
+            lambda: update_document_status(file.filename, "indexed")
+        )
+
         return {
-            "status": "success",
-            "old_deleted": old_file_name,
-            "new_file": file.filename,
+            "status":         "success",
+            "file_name":      file.filename,
+            "document_id":    doc_id,
             "chunks_indexed": len(chunks),
+            "pages":          parsed_result.total_pages,
+            "doc_lang":       parsed_result.meta.doc_lang if parsed_result.meta else "en",
+            "doc_year":       parsed_result.meta.doc_year if parsed_result.meta else "",
         }
+
     except Exception as e:
-        logger.error("Replace pipeline failed for %s: %s", file.filename, e)
-        try:
-            await run_in_threadpool(lambda: db.delete_document(file.filename))
-        except Exception:
-            pass
-        try:
-            await run_in_threadpool(lambda: update_document_status(file.filename, "failed"))
-        except Exception:
-            pass
-        _clear_gpu_and_gc()
+        logger.error("Upload pipeline failed for %s: %s", file.filename, e)
+        await run_in_threadpool(lambda: update_document_status(file.filename, "failed"))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/stats")
-def get_stats():
-    # 1. Chunks
-    try:
-        num_chunks = db.client.count(db.collection_name).count
-    except Exception as e:
-        logger.error("Failed to get Qdrant count: %s", e)
-        num_chunks = 0
-        
-    # 2. Files from Qdrant payloads
-    files = set()
-    try:
-        points, _ = db.client.scroll(
-            collection_name=db.collection_name, 
-            limit=10000, 
-            with_payload=["source_file"], 
-            with_vectors=False
-        )
-        for point in points:
-            src = point.payload.get("source_file")
-            if src:
-                files.add(str(src))
-    except Exception as e:
-        logger.error("Failed to get Qdrant files: %s", e)
-        pass
 
-    # 3. Build files_meta with real upload_time from MongoDB
-    files_meta = {}
+# ── DELETE /api/v2/documents/{filename} ───────────────────────────────────────
+@app.delete("/api/v2/documents/{filename}")
+@app.delete("/api/documents/{filename}")
+@app.delete("/documents/{filename}")
+async def delete_doc(filename: str):
     try:
-        db_docs = list_documents()
-        db_docs_map = {doc["file_name"]: doc for doc in db_docs}
-        for fname in files:
-            if fname in db_docs_map and db_docs_map[fname].get("upload_time"):
-                files_meta[fname] = {"upload_time": db_docs_map[fname]["upload_time"]}
-            else:
-                # Fallback: check md file mtime on disk
-                try:
-                    stem = Path(fname).stem
-                    md_path = config.MD_OUTPUT_DIR / f"{stem}.md"
-                    if md_path.exists():
-                        import datetime
-                        mtime = md_path.stat().st_mtime
-                        files_meta[fname] = {"upload_time": datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()}
-                except Exception:
-                    pass
+        await run_in_threadpool(lambda: db.delete_document(filename))
+        await run_in_threadpool(lambda: delete_document_record(filename))
+        return {"status": "success", "deleted": filename}
     except Exception as e:
-        logger.error("Failed to build files_meta: %s", e)
+        logger.error("Failed to delete document %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail=str(e))
 
+
+# ── GET /api/v2/documents ─────────────────────────────────────────────────────
+@app.get("/api/v2/documents")
+@app.get("/api/documents")
+@app.get("/documents")
+def get_documents():
+    return {"documents": list_documents()}
+
+
+# ── GET /api/v2/sessions ──────────────────────────────────────────────────────
+@app.get("/api/v2/sessions")
+@app.get("/api/sessions")
+def get_sessions():
+    return {"sessions": [s.__dict__ if hasattr(s, "__dict__") else s for s in fetch_all_sessions()]}
+
+
+# ── GET /api/v2/sessions/{session_id}/history ─────────────────────────────────
+@app.get("/api/v2/sessions/{session_id}/history")
+@app.get("/api/sessions/{session_id}/history")
+def get_session_history(session_id: str):
+    history = fetch_conversation_history(session_id)
     return {
-        "status": "online",
-        "num_chunks": num_chunks,
-        "files": list(files),
-        "files_meta": files_meta,
-        "graph": {"connected": False, "entities": 0, "relationships": 0}
+        "session_id": session_id,
+        "history": [
+            {
+                "question": h.question,
+                "answer":   h.answer,
+                "sources":  getattr(h, "sources", []),
+            }
+            for h in history
+        ],
     }
 
-# ── GET /health ────────────────────────────────────────────────────────
+
+# ── DELETE /api/v2/sessions/{session_id} ──────────────────────────────────────
+@app.delete("/api/v2/sessions/{session_id}")
+@app.delete("/api/sessions/{session_id}")
+def remove_session(session_id: str):
+    delete_session(session_id)
+    return {"status": "success", "deleted_session": session_id}
+
+
+# ── GET /health ───────────────────────────────────────────────────────────────
 @app.get("/health")
-def health_check():
+def health():
     try:
         db.get_client().get_collections()
-
         health_check_db()
-
         return {
             "status":   "healthy",
             "qdrant":   "connected",
             "database": "connected",
         }
     except Exception as e:
-        logger.error("Health check failed: %s", e)
-        return {
-            "status": "unhealthy",
-            "error":  str(e),
-        }
+        return {"status": "unhealthy", "error": str(e)}
 
-# ── POST /verify_claim ──────────────────────────────────────────────────
+
+# ── POST /api/verify_claim ────────────────────────────────────────────────────
 class VerifyClaimRequest(BaseModel):
-    claim: Optional[str] = None
-    answer: Optional[str] = None
+    claim:        Optional[str] = None
+    answer:       Optional[str] = None
     source_chunk: Optional[str] = None
-    chunks: Optional[List[str]] = None
-    query: str = ""
+    chunks:       Optional[List[str]] = None
+    query:        str = ""
+
 
 @app.post("/verify_claim")
 @app.post("/api/verify_claim")
-def verify_claim(req: VerifyClaimRequest):
+def verify_claim_endpoint(req: VerifyClaimRequest):
     if not grounding_checker:
         raise HTTPException(status_code=500, detail="Grounding checker not initialized")
-    
+
     answer_text = req.answer or req.claim or ""
-    chunk_list = req.chunks or ([req.source_chunk] if req.source_chunk else [])
+    chunk_list  = req.chunks or ([req.source_chunk] if req.source_chunk else [])
 
     try:
         gr = grounding_checker.check(
-            answer=answer_text,
-            chunks=chunk_list,
-            query=req.query
+            answer = answer_text,
+            chunks = chunk_list,
+            query  = req.query,
         )
-        return gr.to_dict()
+        return gr.to_dict() if hasattr(gr, "to_dict") else gr
     except Exception as e:
-        logger.error("Verification failed: %s", e)
         return {
             "verdict": "UNCHECKED",
             "score": 0.0,
             "unsupported_claims": [],
             "claims": [],
             "reasoning": str(e),
-            "provider": "none"
+            "provider": "none",
         }

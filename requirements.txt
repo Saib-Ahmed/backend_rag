@@ -34,6 +34,7 @@ torchvision==0.20.1+cu124
 transformers>=4.48.0
 uvicorn>=0.29.0
 google-genai
+gliner2
 tabulate
 cachetools
 boto3>=1.34.0

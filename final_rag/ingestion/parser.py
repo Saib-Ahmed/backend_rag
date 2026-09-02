@@ -1,48 +1,69 @@
 """
-ingestion/parser.py
-PyMuPDF + YOLO + Table Transformer based document parser for RAG pipeline.
-Outputs ParseResult with DocumentMeta + BlockRecord list for chunker.
+final_rag/ingestion/parser.py
+
+PDF/DOCX/PPTX/MD document parser for the RAG pipeline. Uses Gemini for
+OCR/transcription of PDFs, and lightweight extractors for office files.
 """
 
 from __future__ import annotations
 
-import gc
 import hashlib
-import json
 import logging
 import re
+import shutil
 import tempfile
 import time
-import asyncio
-from collections import defaultdict, Counter
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, ProcessPoolExecutor, as_completed
+import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-import httpx
-import fitz
-import numpy as np
-import cv2
-import pandas as pd
-import torch
+import pymupdf as fitz
 import warnings
+from google import genai
 
-from PIL import Image
-from transformers import AutoImageProcessor, TableTransformerForObjectDetection
-from doclayout_yolo import YOLOv10
+try:
+    from final_rag.config import (
+        GEMINI_API_KEY,
+        GEMINI_MODEL,
+        SUPPORTED_EXTENSIONS,
+        MAX_FILE_SIZE_MB,
+        GEMINI_MAX_OUTPUT_TOKENS,
+        GEMINI_TEMPERATURE,
+        PAGES_PER_BATCH,
+        MAX_ATTEMPTS_PER_BATCH,
+        MAX_SPLIT_DEPTH,
+        UPLOAD_POLL_INTERVAL_SEC,
+        UPLOAD_POLL_MAX_ATTEMPTS,
+        GEMINI_RETRY_SLEEP_BUSY_SEC,
+        GEMINI_RETRY_SLEEP_QUOTA_SEC,
+        PARSE_FOLDER_MAX_WORKERS,
+        MD_OUTPUT_DIR,
+    )
+except ImportError:
+    from ..config import (
+        GEMINI_API_KEY,
+        GEMINI_MODEL,
+        SUPPORTED_EXTENSIONS,
+        MAX_FILE_SIZE_MB,
+        GEMINI_MAX_OUTPUT_TOKENS,
+        GEMINI_TEMPERATURE,
+        PAGES_PER_BATCH,
+        MAX_ATTEMPTS_PER_BATCH,
+        MAX_SPLIT_DEPTH,
+        UPLOAD_POLL_INTERVAL_SEC,
+        UPLOAD_POLL_MAX_ATTEMPTS,
+        GEMINI_RETRY_SLEEP_BUSY_SEC,
+        GEMINI_RETRY_SLEEP_QUOTA_SEC,
+        PARSE_FOLDER_MAX_WORKERS,
+        MD_OUTPUT_DIR,
+    )
 
-from final_rag.config import (
-    SUMMARY_MODEL,
-    SUMMARY_OLLAMA_URL,
-    SUMMARY_MAX_CHARS,
-    YOLO_MODEL_PATH,
-    TRANSFORMER_MODEL_PATH,
-)
+from .parser_metadata import extract_doc_metadata
 
 warnings.filterwarnings("ignore")
-logging.getLogger("transformers").setLevel(logging.ERROR)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,53 +73,37 @@ logging.basicConfig(
 logger = logging.getLogger("ingestion.parser")
 
 
-# ── Constants ──────────────────────────────────────────────────────────
-SUPPORTED_EXTENSIONS     = {".pdf", ".docx", ".pptx", ".md"}
-MAX_FILE_SIZE_MB         = 50.0
-PARSE_TIMEOUT_SEC        = 300
-
-TABLE_CROP_PADDING           = 20
-TABLE_TRANSFORMER_THRESHOLD  = 0.5
-TABLE_DEDUP_IOU_THRESHOLD    = 0.85
-CELL_SHRINK_MARGIN_PTS       = max(1.5, 3.0 * 72.0 / 150.0)
-MAX_NEAREST_CELL_DIST_SQ     = 2500.0
-COMPLEX_TEXT_THRESHOLD       = 60
-COMPLEX_TOTAL_THRESHOLD      = 80
-
-_BOX_XMIN, _BOX_YMIN, _BOX_XMAX, _BOX_YMAX = 0, 1, 2, 3
-
-_FIGURE_GARBAGE_RE = re.compile(
-    r"(\[FIGURE\]|<!-- image -->)\s*\n((?:.{0,120}\n){1,10})",
-    re.MULTILINE,
-)
+# ── Regex constants ───────────────────────────────────────────────────────────
+_PAGE_MARKER_RE  = re.compile(r'^#{1,2}\s*Page\s+(\d+)\s*$', re.MULTILINE | re.IGNORECASE)
+_HEADING_LINE_RE = re.compile(r'^###\s+(.*)$')
+_TABLE_LINE_RE   = re.compile(r'^\s*\|.*\|\s*$')
+_CODE_FENCE_RE   = re.compile(r'^```[a-zA-Z]*\s*$')
 
 
-# ── Enums ──────────────────────────────────────────────────────────────
 class ExtractionMethod(str, Enum):
-    YOLO    = "yolo"
+    GEMINI  = "gemini_multimodal"
+    OFFICE  = "office_extract"
+    DIRECT  = "direct_markdown"
     SKIPPED = "skipped"
     ERROR   = "error"
 
 
-# ── DocumentMeta ───────────────────────────────────────────────────────
 @dataclass
 class DocumentMeta:
-    doc_id:          str
-    file_name:       str
-    file_path:       str
-    file_type:       str
-    file_size_kb:    float
-    page_count:      int       = 0
-    has_tables:      bool      = False
-    parse_success:   bool      = True
-    filename_tokens: list[str] = field(default_factory=list)
-    doc_year:        str       = ""
-    summary:         str       = ""
-    keywords:        list[str] = field(default_factory=list)
-    warnings:        list[str] = field(default_factory=list)
+    doc_id:                str
+    file_name:             str
+    file_path:             str
+    file_type:             str
+    file_size_kb:          float
+    page_count:            int
+    has_tables:            bool
+    parse_success:         bool
+    filename_tokens:       list[str] = field(default_factory=list)
+    doc_year:              str       = ""
+    doc_lang:              str       = "en"
+    warnings:              list[str] = field(default_factory=list)
 
 
-# ── PageRecord ─────────────────────────────────────────────────────────
 @dataclass
 class PageRecord:
     page_no:    int
@@ -108,7 +113,6 @@ class PageRecord:
     char_end:   int = 0
 
 
-# ── BlockRecord ────────────────────────────────────────────────────────
 @dataclass
 class BlockRecord:
     block_type: str
@@ -119,7 +123,6 @@ class BlockRecord:
     is_table:   bool = False
 
 
-# ── ParseResult ────────────────────────────────────────────────────────
 @dataclass
 class ParseResult:
     file_name:           str
@@ -135,476 +138,359 @@ class ParseResult:
     pages:               list[PageRecord]       = field(default_factory=list)
     blocks:              list[BlockRecord]      = field(default_factory=list)
     doc_id:              str                    = ""
-    doc_year:            str                    = ""
-    filename_tokens:     list[str]              = field(default_factory=list)
-    summary:             str                    = ""
-    keywords:            list[str]              = field(default_factory=list)
+
+    @property
+    def doc_year(self) -> str:
+        return self.meta.doc_year if self.meta else ""
 
 
-# ── Model loading ──────────────────────────────────────────────────────
-def _get_device() -> str:
-    if torch.cuda.is_available():
-        logger.info("GPU detected: %s", torch.cuda.get_device_name(0))
-        return "cuda:0"
-    logger.info("No GPU — using CPU")
-    return "cpu"
-
-DEVICE = _get_device()
-
-logger.info("Loading YOLOv10 layout model...")
-yolo_model = YOLOv10(str(YOLO_MODEL_PATH))
-logger.info("Loading Table Transformer model...")
-try:
-    table_processor = AutoImageProcessor.from_pretrained(str(TRANSFORMER_MODEL_PATH), local_files_only=True)
-    table_model     = TableTransformerForObjectDetection.from_pretrained(str(TRANSFORMER_MODEL_PATH), local_files_only=True)
-except Exception as e:
-    logger.warning("Failed to load Table Transformer locally from %s (%s). Falling back to Hugging Face Hub...", TRANSFORMER_MODEL_PATH, e)
-    table_processor = AutoImageProcessor.from_pretrained("microsoft/table-transformer-structure-recognition")
-    table_model     = TableTransformerForObjectDetection.from_pretrained("microsoft/table-transformer-structure-recognition")
+class _TruncatedResponseError(Exception):
+    """Raised internally when Gemini's response hit the output-token ceiling."""
+    def __init__(self, partial_text: str):
+        super().__init__("Gemini response truncated (MAX_TOKENS)")
+        self.partial_text = partial_text
 
 
-
-# ── Layout helpers ─────────────────────────────────────────────────────
-def _get_dynamic_reading_order(boxes_data: list) -> list:
-    if not boxes_data:
-        return []
-    boxes_data.sort(key=lambda b: b[2])
-    rows = []
-    for box in boxes_data:
-        idx, x1, y1, x2, y2 = box
-        placed = False
-        for row in rows:
-            row_y1   = min(b[2] for b in row)
-            row_y2   = max(b[4] for b in row)
-            overlap  = max(0, min(y2, row_y2) - max(y1, row_y1))
-            bh       = y2 - y1
-            rh       = row_y2 - row_y1
-            if bh > 0 and rh > 0 and overlap / min(bh, rh) > 0.4:
-                row.append(box)
-                placed = True
-                break
-        if not placed:
-            rows.append([box])
-    result = []
-    for row in rows:
-        row.sort(key=lambda b: b[1])
-        result.extend(b[0] for b in row)
-    return result
+_gemini_client = None
 
 
-def _y_iou(a: list, b: list) -> float:
-    inter = max(0.0, min(a[_BOX_YMAX], b[_BOX_YMAX]) - max(a[_BOX_YMIN], b[_BOX_YMIN]))
-    union = max(a[_BOX_YMAX], b[_BOX_YMAX]) - min(a[_BOX_YMIN], b[_BOX_YMIN])
-    return inter / union if union > 0 else 0.0
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        if not GEMINI_API_KEY:
+            raise RuntimeError(
+                "GEMINI_API_KEY is not set. Add GEMINI_API_KEY=... to your .env file."
+            )
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _gemini_client
 
 
-def _x_iou(a: list, b: list) -> float:
-    inter = max(0.0, min(a[_BOX_XMAX], b[_BOX_XMAX]) - max(a[_BOX_XMIN], b[_BOX_XMIN]))
-    union = max(a[_BOX_XMAX], b[_BOX_XMAX]) - min(a[_BOX_XMIN], b[_BOX_XMIN])
-    return inter / union if union > 0 else 0.0
+def _upload_pdf(client, file_path: Path):
+    logger.info("Uploading '%s' to Gemini...", file_path.name)
+
+    unique = f"{file_path.name}-{uuid.uuid4().hex}"
+    safe_name = hashlib.md5(unique.encode("utf-8")).hexdigest()[:16] + file_path.suffix
+    tmp_dir   = Path(tempfile.gettempdir())
+    safe_path = tmp_dir / safe_name
+    shutil.copyfile(file_path, safe_path)
+
+    try:
+        gfile = client.files.upload(file=str(safe_path))
+        for _ in range(UPLOAD_POLL_MAX_ATTEMPTS):
+            info = client.files.get(name=gfile.name)
+            if info.state.name == "ACTIVE":
+                return gfile
+            if info.state.name == "FAILED":
+                raise RuntimeError(f"Gemini file processing failed for {file_path.name}")
+            time.sleep(UPLOAD_POLL_INTERVAL_SEC)
+        raise RuntimeError(f"Timed out waiting for Gemini to process {file_path.name}")
+    finally:
+        safe_path.unlink(missing_ok=True)
 
 
-def _clean_markdown_text(text: str) -> str:
-    if not text:
-        return ""
-    text = re.sub(r'^[•\-\u2022]\s*', '- ', text, flags=re.MULTILINE)
-    text = re.sub(r'[ \t]+', ' ', text)
-    return text.strip()
+def _build_extraction_prompt(start: int, end: int) -> str:
+    return f"""You are an expert Document Transcription and OCR specialist.
+
+The attached PDF contains text in Hindi and/or English. Transcribe ONLY pages {start} through {end} (inclusive). Use this EXACT format for every page in that range, with no exceptions:
+
+## Page <page_number>
+
+<the full verbatim text content of that page, preserving paragraph breaks>
+
+Any tables on the page must be written as GitHub-flavored Markdown tables, directly inline in the page's content, e.g.:
+
+| Column A | Column B |
+|---|---|
+| value | value |
+
+Any headings or titles on the page should be written as: ### <heading text>
+This includes numbered section headings (e.g. "3.7 State Cooperative Development Committee (SCDC)"), not just standalone titles — if a line reads like a section heading (short, visually set apart from surrounding text, often numbered), mark it with ### even if it is followed immediately by body text or bullet points.
+
+STRICT RULES:
+1. Do NOT translate anything. Keep Hindi in Hindi (Devanagari script) and English in English, exactly as written.
+2. Transcribe every word, sentence, and paragraph. Do not summarize or omit anything.
+3. Preserve the original structure and reading order as closely as possible.
+4. If a page is genuinely blank or has no visible content, output only:
+   ## Page <page_number>
+
+   *(blank page)*
+5. NEVER write placeholder text such as "Screenshot for page N", "[image]", or "content not available". Always transcribe the actual visible content. If a word is unclear, give your best-effort reading rather than omitting it.
+6. Output a "## Page <page_number>" marker for every single page in the requested range, in order.
+
+Begin your transcription now, starting with page {start}.
+"""
 
 
-def _dataframe_to_markdown(df: pd.DataFrame) -> str:
-    if df is None or df.empty:
-        return ""
-    df = df.fillna("").astype(str)
-    df = df.apply(lambda col: col.str.replace(r"\n+", " ", regex=True).str.strip())
-    md = df.to_markdown(index=False)
-    if md is None:
-        headers    = df.columns.tolist()
-        rows       = df.values.tolist()
-        col_widths = [
-            max(len(str(h)), max((len(str(r[i])) for r in rows), default=0))
-            for i, h in enumerate(headers)
-        ]
-        def fmt_row(cells):
-            return "| " + " | ".join(str(c).ljust(col_widths[i]) for i, c in enumerate(cells)) + " |"
-        sep  = "| " + " | ".join("-" * w for w in col_widths) + " |"
-        md   = "\n".join([fmt_row(headers), sep] + [fmt_row(r) for r in rows])
-    return md
+def _call_gemini(client, gfile, prompt: str) -> str:
+    last_error = None
 
+    for attempt in range(1, MAX_ATTEMPTS_PER_BATCH + 1):
+        try:
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[gfile, prompt],
+                config={
+                    "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
+                    "temperature": GEMINI_TEMPERATURE,
+                },
+            )
 
-# ── Table extraction ───────────────────────────────────────────────────
-def _assign_spans_to_cells(
-    page: fitz.Page,
-    pdf_rows: list,
-    pdf_cols: list,
-    is_header_flags: list,
-) -> list[dict]:
-    if not pdf_rows or not pdf_cols:
-        return []
+            finish_reason = None
+            try:
+                finish_reason = response.candidates[0].finish_reason
+            except Exception:
+                pass
 
-    margin = CELL_SHRINK_MARGIN_PTS
-    cell_grid = []
-    for ri, row in enumerate(pdf_rows):
-        row_ymin = row[_BOX_YMIN] + margin
-        row_ymax = row[_BOX_YMAX] - margin
-        row_cells = []
-        for col in pdf_cols:
-            col_xmin = col[_BOX_XMIN] + margin
-            col_xmax = col[_BOX_XMAX] - margin
-            if col_xmin >= col_xmax:
-                col_xmin, col_xmax = col[_BOX_XMIN], col[_BOX_XMAX]
-            if row_ymin >= row_ymax:
-                row_ymin, row_ymax = row[_BOX_YMIN], row[_BOX_YMAX]
-            row_cells.append({
-                "rect":  fitz.Rect(col_xmin, row_ymin, col_xmax, row_ymax),
-                "spans": [],
-            })
-        cell_grid.append(row_cells)
+            text = response.text or ""
 
-    all_rects  = [c["rect"] for row in cell_grid for c in row]
-    table_rect = fitz.Rect(
-        min(r.x0 for r in all_rects) - 5,
-        min(r.y0 for r in all_rects) - 5,
-        max(r.x1 for r in all_rects) + 5,
-        max(r.y1 for r in all_rects) + 5,
+            if finish_reason is not None and "MAX_TOKENS" in str(finish_reason):
+                raise _TruncatedResponseError(text)
+
+            if not text.strip():
+                raise RuntimeError("Gemini returned an empty response")
+
+            return text
+
+        except _TruncatedResponseError:
+            raise
+
+        except Exception as e:
+            err_str = str(e)
+            is_busy  = "503" in err_str or "UNAVAILABLE" in err_str
+            is_quota = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+
+            if is_busy or is_quota:
+                sleep_sec = GEMINI_RETRY_SLEEP_QUOTA_SEC if is_quota else GEMINI_RETRY_SLEEP_BUSY_SEC
+                logger.warning(
+                    "Gemini %s (attempt %d/%d). Sleeping %ds: %s",
+                    "quota" if is_quota else "busy",
+                    attempt, MAX_ATTEMPTS_PER_BATCH, sleep_sec, e,
+                )
+                time.sleep(sleep_sec)
+                last_error = e
+            else:
+                logger.error("Gemini call failed: %s", e)
+                raise
+
+    raise RuntimeError(
+        f"Gemini call failed after {MAX_ATTEMPTS_PER_BATCH} attempts. Last error: {last_error}"
     )
 
-    text_dict = page.get_text("dict", clip=table_rect)
-    for block in text_dict.get("blocks", []):
-        if block.get("type") != 0:
-            continue
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                span_text = span.get("text", "").strip()
-                if not span_text:
-                    continue
-                span_bbox = span.get("bbox")
-                if not span_bbox:
-                    continue
-                span_cx = (span_bbox[0] + span_bbox[2]) / 2
-                span_cy = (span_bbox[1] + span_bbox[3]) / 2
 
-                assigned = False
-                for ri, row_cells in enumerate(cell_grid):
-                    for ci, cell in enumerate(row_cells):
-                        r = cell["rect"]
-                        if r.x0 <= span_cx <= r.x1 and r.y0 <= span_cy <= r.y1:
-                            cell["spans"].append((span_cx, span_cy, span_text))
-                            assigned = True
-                            break
-                    if assigned:
-                        break
+def _extract_page_range(client, gfile, start: int, end: int, depth: int = 0) -> str:
+    prompt = _build_extraction_prompt(start, end)
+    try:
+        return _call_gemini(client, gfile, prompt)
+    except _TruncatedResponseError as e:
+        if depth >= MAX_SPLIT_DEPTH or start == end:
+            logger.warning("Max split depth reached at page %d-%d. Keeping partial text.", start, end)
+            return e.partial_text
 
-                if not assigned:
-                    min_dist_sq = float("inf")
-                    best_ri, best_ci = 0, 0
-                    for ri, row_cells in enumerate(cell_grid):
-                        for ci, cell in enumerate(row_cells):
-                            r = cell["rect"]
-                            ccx = (r.x0 + r.x1) / 2
-                            ccy = (r.y0 + r.y1) / 2
-                            d   = (span_cx - ccx) ** 2 + (span_cy - ccy) ** 2
-                            if d < min_dist_sq:
-                                min_dist_sq    = d
-                                best_ri, best_ci = ri, ci
-                    if min_dist_sq <= MAX_NEAREST_CELL_DIST_SQ:
-                        cell_grid[best_ri][best_ci]["spans"].append(
-                            (span_cx, span_cy, span_text)
-                        )
-
-    result = []
-    for ri, row_cells in enumerate(cell_grid):
-        cells_text = []
-        for cell in row_cells:
-            cell["spans"].sort(key=lambda s: (s[1], s[0]))
-            cells_text.append(" ".join(s[2] for s in cell["spans"]))
-        result.append({
-            "cells":     cells_text,
-            "is_header": is_header_flags[ri] if ri < len(is_header_flags) else False,
-        })
-    return result
+        mid = (start + end) // 2
+        logger.info("Batch %d-%d truncated. Halving -> [%d-%d] + [%d-%d]", start, end, start, mid, mid + 1, end)
+        first_half  = _extract_page_range(client, gfile, start, mid, depth + 1)
+        second_half = _extract_page_range(client, gfile, mid + 1, end, depth + 1)
+        return first_half.rstrip() + "\n\n" + second_half.lstrip()
 
 
-def _extract_table_with_transformer(
-    page: fitz.Page,
-    img_array: np.ndarray,
-    yolo_box: list,
-    page_img_width: int,
-    page_img_height: int,
-) -> pd.DataFrame | None:
-    raw_x1, raw_y1, raw_x2, raw_y2 = [int(v) for v in yolo_box]
-    h, w = img_array.shape[:2]
-    x1 = max(0,     raw_x1 - TABLE_CROP_PADDING)
-    y1 = max(0,     raw_y1 - TABLE_CROP_PADDING)
-    x2 = min(w - 1, raw_x2 + TABLE_CROP_PADDING)
-    y2 = min(h - 1, raw_y2 + TABLE_CROP_PADDING)
+def _get_pdf_page_count(file_path: Path) -> int:
+    doc = fitz.open(str(file_path))
+    count = len(doc)
+    doc.close()
+    return count
 
-    cropped = img_array[y1:y2, x1:x2]
-    if cropped.size == 0:
-        return None
 
-    pil_img     = Image.fromarray(cropped).convert("RGB")
-    crop_w, crop_h = pil_img.size
-    target_sizes   = torch.tensor([[crop_h, crop_w]])
+def _extract_pdf_via_gemini(file_path: Path, total_pages: int, doc_warnings: list[str]) -> str:
+    client = _get_gemini_client()
+    gfile  = _upload_pdf(client, file_path)
 
-    inputs = table_processor(images=pil_img, return_tensors="pt")
-    with torch.no_grad():
-        outputs = table_model(**inputs)
-
-    results = table_processor.post_process_object_detection(
-        outputs, threshold=TABLE_TRANSFORMER_THRESHOLD, target_sizes=target_sizes,
-    )[0]
-
-    raw_rows, raw_cols = [], []
-    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        label_name = table_model.config.id2label[label.item()]
-        if label_name == "table column header":
-            raw_rows.append({"box": box.tolist(), "is_header": True,  "score": score.item()})
-        elif label_name == "table row":
-            raw_rows.append({"box": box.tolist(), "is_header": False, "score": score.item()})
-        elif label_name == "table column":
-            raw_cols.append(box.tolist())
-
-    # dedup rows
-    kept_rows = []
-    for candidate in raw_rows:
-        merged = False
-        for i, existing in enumerate(kept_rows):
-            if _y_iou(candidate["box"], existing["box"]) > TABLE_DEDUP_IOU_THRESHOLD:
-                if candidate["is_header"] and not existing["is_header"]:
-                    kept_rows[i] = dict(candidate)
-                elif candidate["score"] > existing["score"] and candidate["is_header"] == existing["is_header"]:
-                    kept_rows[i] = dict(candidate)
-                merged = True
-                break
-        if not merged:
-            kept_rows.append(dict(candidate))
-
-    # dedup cols
-    kept_cols = []
-    for candidate in raw_cols:
-        merged = False
-        for i, existing in enumerate(kept_cols):
-            if _x_iou(candidate, existing) > TABLE_DEDUP_IOU_THRESHOLD:
-                if (candidate[_BOX_XMAX] - candidate[_BOX_XMIN]) > (existing[_BOX_XMAX] - existing[_BOX_XMIN]):
-                    kept_cols[i] = candidate
-                merged = True
-                break
-        if not merged:
-            kept_cols.append(candidate)
-
-    kept_rows.sort(key=lambda r: r["box"][_BOX_YMIN])
-    kept_cols.sort(key=lambda c: c[_BOX_XMIN])
-
-    rows            = [r["box"] for r in kept_rows]
-    cols            = kept_cols
-    is_header_flags = [r["is_header"] for r in kept_rows]
-
-    if not rows or not cols:
-        return None
-
-    pdf_w, pdf_h = page.rect.width, page.rect.height
-    scale_x = pdf_w / page_img_width
-    scale_y = pdf_h / page_img_height
-
-    def crop_to_pdf(box):
-        return [
-            (box[_BOX_XMIN] + x1) * scale_x,
-            (box[_BOX_YMIN] + y1) * scale_y,
-            (box[_BOX_XMAX] + x1) * scale_x,
-            (box[_BOX_YMAX] + y1) * scale_y,
+    try:
+        batches = [
+            (b_start, min(b_start + PAGES_PER_BATCH - 1, total_pages))
+            for b_start in range(1, total_pages + 1, PAGES_PER_BATCH)
         ]
+        logger.info("Extracting %s | %d pages in %d batch(es)", file_path.name, total_pages, len(batches))
 
-    pdf_rows = [crop_to_pdf(r) for r in rows]
-    pdf_cols = [crop_to_pdf(c) for c in cols]
+        chunks: list[str] = []
+        for i, (b_start, b_end) in enumerate(batches, 1):
+            logger.info("Batch %d/%d (pages %d-%d)...", i, len(batches), b_start, b_end)
+            text = _extract_page_range(client, gfile, b_start, b_end)
+            chunks.append(text)
 
-    row_dicts = _assign_spans_to_cells(page, pdf_rows, pdf_cols, is_header_flags)
-    if not row_dicts:
-        return None
+        return "\n\n".join(chunks)
 
-    header_indices = [i for i, rd in enumerate(row_dicts) if rd["is_header"]]
-    if header_indices:
-        header_idx = header_indices[0]
-        headers    = row_dicts[header_idx]["cells"]
-        data_rows  = [rd["cells"] for i, rd in enumerate(row_dicts) if i != header_idx]
-        n_cols     = len(cols)
-        if len(headers) < n_cols:
-            headers += [f"Col_{j}" for j in range(len(headers), n_cols)]
-        elif len(headers) > n_cols:
-            headers = headers[:n_cols]
-        return pd.DataFrame(data_rows, columns=headers)
-    else:
-        return pd.DataFrame([rd["cells"] for rd in row_dicts])
+    finally:
+        try:
+            client.files.delete(name=gfile.name)
+            logger.info("Deleted remote file '%s' from Gemini.", file_path.name)
+        except Exception as e:
+            logger.warning("Failed to delete remote file '%s': %s", file_path.name, e)
 
 
-# ── Post-processing ────────────────────────────────────────────────────
+def _extract_office_document(file_path: Path, suffix: str, doc_warnings: list[str]) -> tuple[str, int]:
+    if suffix == ".docx":
+        import docx
+        doc   = docx.Document(str(file_path))
+        lines = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            lines.append("\n" + "\n".join(" | ".join(c.text.strip() for c in row.cells) for row in table.rows))
+        return "## Page 1\n\n" + "\n\n".join(lines), 1
+
+    if suffix == ".pptx":
+        from pptx import Presentation
+        prs   = Presentation(str(file_path))
+        pages = []
+        for i, slide in enumerate(prs.slides, 1):
+            texts = [
+                shape.text.strip()
+                for shape in slide.shapes
+                if shape.has_text_frame and shape.text.strip()
+            ]
+            pages.append(f"## Page {i}\n\n" + "\n\n".join(texts))
+        return "\n\n".join(pages), len(prs.slides)
+
+    raise ValueError(f"Unsupported office format: {suffix}")
+
+
+def _split_into_pages(markdown: str) -> list[tuple[int, str]]:
+    matches = list(_PAGE_MARKER_RE.finditer(markdown))
+    if not matches:
+        return [(1, markdown.strip())]
+
+    pages: list[tuple[int, str]] = []
+    for i, m in enumerate(matches):
+        page_no     = int(m.group(1))
+        content_start = m.end()
+        content_end   = matches[i + 1].start() if i + 1 < len(matches) else len(markdown)
+        page_text     = markdown[content_start:content_end].strip()
+        pages.append((page_no, page_text))
+
+    return pages
+
+
+def _content_to_blocks(content: str, page_no: int, current_section: str) -> tuple[list[BlockRecord], str]:
+    blocks: list[BlockRecord] = []
+    lines  = content.splitlines()
+
+    in_code      = False
+    in_table     = False
+    table_lines: list[str] = []
+    text_lines:  list[str] = []
+
+    def flush_text():
+        if text_lines:
+            txt = "\n".join(text_lines).strip()
+            if txt:
+                blocks.append(BlockRecord(
+                    block_type="text",
+                    content=txt,
+                    page_no=page_no,
+                    section=current_section,
+                    is_table=False,
+                ))
+            text_lines.clear()
+
+    for line in lines:
+        if _CODE_FENCE_RE.match(line.strip()):
+            in_code = not in_code
+            text_lines.append(line)
+            continue
+
+        if not in_code:
+            h_match = _HEADING_LINE_RE.match(line.strip())
+            if h_match:
+                flush_text()
+                if in_table:
+                    blocks.append(BlockRecord(
+                        block_type="table",
+                        content="\n".join(table_lines).strip(),
+                        page_no=page_no,
+                        section=current_section,
+                        is_table=True,
+                    ))
+                    table_lines.clear()
+                    in_table = False
+
+                current_section = h_match.group(1).strip()
+                blocks.append(BlockRecord(
+                    block_type="heading",
+                    content=current_section,
+                    page_no=page_no,
+                    section=current_section,
+                    is_table=False,
+                ))
+                continue
+
+            if _TABLE_LINE_RE.match(line):
+                flush_text()
+                in_table = True
+                table_lines.append(line)
+                continue
+            elif in_table:
+                blocks.append(BlockRecord(
+                    block_type="table",
+                    content="\n".join(table_lines).strip(),
+                    page_no=page_no,
+                    section=current_section,
+                    is_table=True,
+                ))
+                table_lines.clear()
+                in_table = False
+
+        text_lines.append(line)
+
+    flush_text()
+    if in_table and table_lines:
+        blocks.append(BlockRecord(
+            block_type="table",
+            content="\n".join(table_lines).strip(),
+            page_no=page_no,
+            section=current_section,
+            is_table=True,
+        ))
+
+    return blocks, current_section
+
+
+def _parse_markdown_document(markdown: str) -> tuple[list[PageRecord], list[BlockRecord]]:
+    pages_raw = _split_into_pages(markdown)
+    pages:  list[PageRecord]  = []
+    blocks: list[BlockRecord] = []
+    current_section = ""
+
+    for page_no, content in pages_raw:
+        pages.append(PageRecord(page_no=page_no, page_label=str(page_no), text=content))
+        page_blocks, current_section = _content_to_blocks(content, page_no, current_section)
+        blocks.extend(page_blocks)
+
+    return pages, blocks
+
+
 def _clean_noise(md: str) -> str:
-    md = re.sub(r'[\u0900-\u097F]+', '', md)
-    md = re.sub(r'(?im)^page\s+\d+\s+of\s+\d+$',  '', md)
-    md = re.sub(r'(?im)^\d+\s*\|\s*page$',          '', md)
-    md = re.sub(r'(?im)^-\s*\d+\s*-$',              '', md)
-    md = re.sub(r'(?im)^(confidential|draft|internal use only|proprietary).*$', '', md)
-    md = re.sub(r'(?im)^([A-Z]{4,}\s*){2,}$',       '', md)
-    md = re.sub(r'(?m)^\s*\d+\s*$',                 '', md)
-    return md
+    cleaned = []
+    for line in md.splitlines():
+        if re.search(r'^\s*page\s+\d+\s+of\s+\d+\s*$', line, re.IGNORECASE):
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
 
 
 def _postprocess_markdown(md: str) -> str:
     md = _clean_noise(md)
-    md = re.sub(r"\n{3,}", "\n\n", md)
+    md = re.sub(r'\n{3,}', '\n\n', md)
     return md.strip()
 
 
-# ── Metadata helpers ───────────────────────────────────────────────────
 def _make_doc_id(file_name: str, file_size_kb: float) -> str:
-    return hashlib.md5(f"{file_name}{file_size_kb}".encode()).hexdigest()[:12]
+    raw = f"{file_name}:{file_size_kb}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
 
 
-def _extract_filename_tokens(file_name: str) -> list[str]:
-    stem   = Path(file_name).stem.lower()
-    tokens = re.split(r'[_\-\s]+', stem)
-    return [t for t in tokens if t]
-
-
-def _extract_doc_metadata(file_name: str, markdown: str = "") -> dict:
-    meta = {}
-    name = Path(file_name).stem
-
-    year = re.search(r'\b(19\d{2}|20\d{2})\b', name)
-    if year:
-        meta["year"] = year.group(1)
-        return meta
-
-    if markdown:
-        heading_years = []
-        for line in markdown.split("\n"):
-            if line.strip().startswith("#"):
-                for y in re.findall(r'\b(19\d{2}|20\d{2})\b', line):
-                    heading_years.append(int(y))
-        if heading_years:
-            meta["year"] = str(max(heading_years))
-            return meta
-
-    if markdown:
-        counts: dict = {}
-        for y in re.findall(r'\b(19\d{2}|20\d{2})\b', markdown[:2000]):
-            counts[y] = counts.get(y, 0) + 1
-        if counts:
-            meta["year"] = max(counts, key=lambda k: counts[k])
-
-    return meta
-
-
-# ── LLM metadata ───────────────────────────────────────────────────────
-async def _generate_summary_async(markdown: str, client: httpx.AsyncClient) -> str:
-    try:
-        headings = [l.strip() for l in markdown.split("\n") if l.strip().startswith("#")][:10]
-        mid      = len(markdown) // 2
-        body     = markdown[:SUMMARY_MAX_CHARS] + "\n\n" + markdown[mid: mid + 1500]
-        prompt   = (
-            "You are a document summarizer.\n"
-            "Read the document excerpt below.\n"
-            "First line: write a short title (max 10 words) describing the document.\n"
-            "Then write a 4-5 line summary describing:\n"
-            "- What this document is about\n"
-            "- Who are the main parties or subjects\n"
-            "- What is the key issue or finding\n"
-            "- What domain this belongs to\n"
-            "Format: Title on first line, then a blank line, then the summary paragraph. No bullets.\n\n"
-            f"Headings:\n{chr(10).join(headings)}\n\nContent:\n{body}"
-        )
-        response = await client.post(
-            SUMMARY_OLLAMA_URL,
-            json={"model": SUMMARY_MODEL, "prompt": prompt, "stream": False, "think": False, "keep_alive": 0},
-            timeout=120,
-        )
-        response.raise_for_status()
-        summary = response.json().get("response", "").strip()
-        logger.info("Summary generated | chars=%d", len(summary))
-        return summary
-    except Exception as e:
-        logger.warning("Summary generation failed | %s", e)
-        return ""
-
-
-async def _extract_keywords_async(markdown: str, client: httpx.AsyncClient) -> list[str]:
-    try:
-        headings = [l.strip() for l in markdown.split("\n") if l.strip().startswith("#")][:10]
-        body     = markdown[:1500]
-        prompt   = (
-            "You are a keyword extractor.\n"
-            "Read the document excerpt below.\n"
-            "Return a JSON array of max 10 keywords.\n"
-            "Keywords must be:\n"
-            "- Important entities, concepts, technologies, laws, organisations, people, places, products, or events\n"
-            "- Terms that best identify the document uniquely\n"
-            "- Short phrases with maximum 3 words\n"
-            "- Mix broad topics and specific identifiers when relevant\n"
-            "Avoid generic words like 'document', 'content', 'section', 'chapter', 'introduction'.\n"
-            "Return ONLY a JSON array. No explanation. No markdown.\n"
-            'Example: ["machine learning", "OpenAI", "financial fraud"]\n\n'
-            f"Headings:\n{chr(10).join(headings)}\n\nContent:\n{body}"
-        )
-        response = await client.post(
-            SUMMARY_OLLAMA_URL,
-            json={"model": SUMMARY_MODEL, "prompt": prompt, "stream": False, "think": False, "keep_alive": 0},
-            timeout=120,
-        )
-        response.raise_for_status()
-        raw      = re.sub(r"```json|```", "", response.json().get("response", "").strip()).strip()
-        keywords = json.loads(raw)
-        if isinstance(keywords, list):
-            keywords = [k for k in keywords if isinstance(k, str)][:10]
-            logger.info("Keywords extracted | count=%d", len(keywords))
-            return keywords
-        return []
-    except Exception as e:
-        logger.warning("Keyword extraction failed | %s", e)
-        return []
-
-
-async def _generate_metadata_parallel(markdown: str) -> tuple[str, list[str]]:
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        summary, keywords = await asyncio.gather(
-            _generate_summary_async(markdown, client),
-            _extract_keywords_async(markdown, client),
-        )
-    return summary, keywords
-
-
-def _run_async_safe(coro):
-    try:
-        asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-
-def warmup_summary_model() -> None:
-    try:
-        logger.info("Warming up summary model | %s", SUMMARY_MODEL)
-        httpx.post(
-            SUMMARY_OLLAMA_URL,
-            json={"model": SUMMARY_MODEL, "prompt": "hello", "stream": False, "think": False, "keep_alive": 300},
-            timeout=60,
-        )
-        logger.info("Summary model warm | %s", SUMMARY_MODEL)
-    except Exception as e:
-        logger.warning("Summary model warmup failed | %s", e)
-
-
-# ── Main parser ────────────────────────────────────────────────────────
 class DocumentParser:
-
     def __init__(self, output_dir: Optional[Path] = None):
-        self.output_dir = Path(output_dir) if output_dir else None
-        if self.output_dir:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("DocumentParser initialized | output_dir=%s", self.output_dir)
+        self.output_dir = Path(output_dir) if output_dir else MD_OUTPUT_DIR
 
-    # ── Public: parse bytes ────────────────────────────────────────────
-    def parse_bytes(self, file_bytes: bytes, file_name: str, generate_metadata: bool = True) -> ParseResult:
+    def parse_bytes(self, file_bytes: bytes, file_name: str, domain: str = "") -> ParseResult:
         suffix       = Path(file_name).suffix.lower()
         file_size_mb = len(file_bytes) / (1024 * 1024)
 
@@ -617,297 +503,117 @@ class DocumentParser:
             tmp.write(file_bytes)
             tmp_path = Path(tmp.name)
         try:
-            return self.parse_file(tmp_path, original_file_name=file_name, generate_metadata=generate_metadata)
+            return self.parse_file(tmp_path, original_file_name=file_name, domain=domain)
         finally:
             tmp_path.unlink(missing_ok=True)
 
-    # ── Public: parse file ─────────────────────────────────────────────
     def parse_file(
         self,
         file_path:          str | Path,
-        original_file_name: str = None,
-        generate_metadata:  bool = True,
+        original_file_name: Optional[str] = None,
+        domain:             str           = "",
     ) -> ParseResult:
         file_path = Path(file_path)
         start     = time.perf_counter()
+        suffix    = file_path.suffix.lower()
 
-        if not file_path.exists() or file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            return self._skipped(file_path.name, file_path.suffix, f"Missing or unsupported: {file_path}")
+        if not file_path.exists() or suffix not in SUPPORTED_EXTENSIONS:
+            return self._skipped(file_path.name, suffix, f"Missing or unsupported: {file_path}")
 
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
         file_size_kb = file_path.stat().st_size / 1024
 
         if file_size_mb > MAX_FILE_SIZE_MB:
-            return self._skipped(file_path.name, file_path.suffix, f"Too large: {file_size_mb:.1f}MB")
+            return self._skipped(file_path.name, suffix, f"Too large: {file_size_mb:.1f}MB")
 
-        name_for_meta   = original_file_name or file_path.name
-        doc_id          = _make_doc_id(name_for_meta, round(file_size_kb, 2))
-        filename_tokens = _extract_filename_tokens(name_for_meta)
+        name_for_meta = original_file_name or file_path.name
+        doc_id        = _make_doc_id(name_for_meta, round(file_size_kb, 2))
 
         logger.info("Parsing | %s | %.1f MB", name_for_meta, file_size_mb)
-
-        warnings: list[str]        = []
-        blocks:   list[BlockRecord] = []
-        pages:    list[PageRecord]  = []
-        markdown_lines: list[str]  = []
+        doc_warnings: list[str] = []
 
         try:
-            doc = fitz.open(str(file_path))
-            total_pages = len(doc)
+            if suffix == ".pdf":
+                total_pages  = _get_pdf_page_count(file_path)
+                raw_markdown = _extract_pdf_via_gemini(file_path, total_pages, doc_warnings)
+                method       = ExtractionMethod.GEMINI
 
-            current_section = ""
-            for page_num in range(total_pages):
-                page = doc[page_num]
-                page_no    = page_num + 1
-                page_label = str(page_no)
+            elif suffix == ".md":
+                raw_markdown = file_path.read_text(encoding="utf-8", errors="replace")
+                total_pages  = 1
+                method       = ExtractionMethod.DIRECT
 
-                page_blocks, page_md, current_section = self._process_page(
-                    page, page_no, page_label, warnings, current_section
-                )
-                blocks.extend(page_blocks)
-                markdown_lines.extend(page_md)
+            elif suffix in (".docx", ".pptx"):
+                raw_markdown, total_pages = _extract_office_document(file_path, suffix, doc_warnings)
+                method = ExtractionMethod.OFFICE
 
-                page_text = " ".join(
-                    b.content for b in page_blocks if not b.is_table
-                )
-                pages.append(PageRecord(
-                    page_no    = page_no,
-                    page_label = page_label,
-                    text       = page_text.strip(),
-                ))
-
-            doc.close()
+            else:
+                return self._skipped(name_for_meta, suffix, f"Unsupported: {suffix}")
 
         except Exception as e:
             logger.error("Parse failed | %s | %s", name_for_meta, e)
             return ParseResult(
                 file_name           = name_for_meta,
-                file_type           = file_path.suffix,
+                file_type           = suffix,
                 method_used         = ExtractionMethod.ERROR,
                 markdown            = "",
                 success             = False,
                 error               = str(e),
-                warnings            = warnings,
+                warnings            = doc_warnings,
                 processing_time_sec = round(time.perf_counter() - start, 3),
             )
 
-        raw_markdown = _postprocess_markdown("\n\n".join(markdown_lines))
-        self._save(file_path, raw_markdown, name_for_meta)
+        raw_markdown  = _postprocess_markdown(raw_markdown)
+        pages, blocks = _parse_markdown_document(raw_markdown)
+        self._save(file_path, raw_markdown, name_for_meta, doc_id, domain=domain)
 
-        elapsed  = round(time.perf_counter() - start, 3)
-        doc_meta = _extract_doc_metadata(name_for_meta, raw_markdown)
-        doc_year = doc_meta.get("year", "")
+        elapsed    = round(time.perf_counter() - start, 3)
         has_tables = any(b.is_table for b in blocks)
 
-        if generate_metadata:
-            summary, keywords = _run_async_safe(_generate_metadata_parallel(raw_markdown))
-        else:
-            summary, keywords = "", []
+        doc_meta = extract_doc_metadata(name_for_meta, raw_markdown)
 
         meta = DocumentMeta(
-            doc_id          = doc_id,
-            file_name       = name_for_meta,
-            file_path       = str(file_path),
-            file_type       = file_path.suffix,
-            file_size_kb    = round(file_size_kb, 2),
-            page_count      = len(pages),
-            has_tables      = has_tables,
-            parse_success   = True,
-            filename_tokens = filename_tokens,
-            doc_year        = doc_year,
-            summary         = summary,
-            keywords        = keywords,
-            warnings        = warnings,
+            doc_id=doc_id,
+            file_name=name_for_meta,
+            file_path=str(file_path),
+            file_type=suffix,
+            file_size_kb=round(file_size_kb, 2),
+            page_count=len(pages),
+            has_tables=has_tables,
+            parse_success=True,
+            filename_tokens=doc_meta.filename_tokens,
+            doc_year=doc_meta.doc_year,
+            doc_lang=doc_meta.doc_lang,
+            warnings=doc_warnings,
         )
 
         logger.info(
-            "Done | %s | pages=%d | blocks=%d | tables=%d | time=%.3fs",
+            "Done | %s | pages=%d | blocks=%d | tables=%d | lang=%s | year=%s | time=%.3fs",
             name_for_meta, len(pages), len(blocks),
-            sum(1 for b in blocks if b.is_table), elapsed,
+            sum(1 for b in blocks if b.is_table),
+            doc_meta.doc_lang, doc_meta.doc_year or "unknown", elapsed,
         )
 
         return ParseResult(
-            file_name           = name_for_meta,
-            file_type           = file_path.suffix,
-            method_used         = ExtractionMethod.YOLO,
-            markdown            = raw_markdown,
-            meta                = meta,
-            total_pages         = total_pages,
-            success             = True,
-            warnings            = warnings,
-            pages               = pages,
-            blocks              = blocks,
-            processing_time_sec = elapsed,
-            doc_id              = doc_id,
-            doc_year            = doc_year,
-            filename_tokens     = filename_tokens,
-            summary             = summary,
-            keywords            = keywords,
+            file_name=name_for_meta,
+            file_type=suffix,
+            method_used=method,
+            markdown=raw_markdown,
+            meta=meta,
+            total_pages=total_pages,
+            success=True,
+            warnings=doc_warnings,
+            pages=pages,
+            blocks=blocks,
+            processing_time_sec=elapsed,
+            doc_id=doc_id,
         )
 
-    # ── Per-page processing ────────────────────────────────────────────
-    def _process_page(
-        self,
-        page:       fitz.Page,
-        page_no:    int,
-        page_label: str,
-        warnings:   list,
-        current_section: str,
-    ) -> tuple[list[BlockRecord], list[str], str]:
-        """
-        Returns (blocks, markdown_lines) for one page.
-        Pages that are scanned/complex/blank yield no blocks and a note in markdown.
-        """
-        blocks: list[BlockRecord] = []
-        md:     list[str]         = []
-
-        raw_page_text = page.get_text("text").strip()
-        has_text      = len(raw_page_text) > 0
-        has_images    = len(page.get_images()) > 0
-
-        pix       = page.get_pixmap(dpi=150)
-        img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
-        if pix.n == 4:
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGBA2RGB)
-
-        det_res = yolo_model.predict(
-            img_array, imgsz=1024, conf=0.2, device=DEVICE, verbose=False
-        )
-        yolo_boxes = det_res[0].boxes
-
-        element_counts = Counter()
-        for b in yolo_boxes:
-            lbl = yolo_model.names[int(b.cls[0].item())].lower()
-            if lbl != "abandon":
-                element_counts[lbl] += 1
-
-        total_elements = sum(element_counts.values())
-        text_count     = element_counts.get("plain text", 0) + element_counts.get("title", 0)
-
-        # ── Route: complex / scanned / blank ──────────────────────────
-        if text_count >= COMPLEX_TEXT_THRESHOLD or total_elements >= COMPLEX_TOTAL_THRESHOLD:
-            logger.info("Page %d: complex — skipping", page_no)
-            warnings.append(f"Page {page_no}: complex layout, skipped")
-            md.append(f"## Page {page_no}\n\n> [Complex page — skipped]\n")
-            return blocks, md, current_section
-
-        if not has_text and not has_images and not total_elements:
-            logger.info("Page %d: blank", page_no)
-            return blocks, md, current_section
-
-        if not has_text and (has_images or total_elements):
-            logger.info("Page %d: scanned/no-text — skipping", page_no)
-            warnings.append(f"Page {page_no}: scanned, no text layer")
-            md.append(f"## Page {page_no}\n\n> [Scanned page — no text layer]\n")
-            return blocks, md, current_section
-
-        # ── Build reading order ────────────────────────────────────────
-        boxes_data = []
-        for idx in range(len(yolo_boxes)):
-            b = yolo_boxes[idx]
-            bx1, by1, bx2, by2 = b.xyxy[0].tolist()
-            boxes_data.append((idx, bx1, by1, bx2, by2))
-
-        sorted_indices = _get_dynamic_reading_order(boxes_data)
-
-        md.append(f"## Page {page_no}\n")
-        seen_texts: set[str] = set()
-        current_section      = ""
-
-        text_labels   = {"title", "plain text", "figure_caption",
-                         "table_caption", "table_footnote", "formula_caption"}
-
-        for idx in sorted_indices:
-            b      = yolo_boxes[idx]
-            bx1, by1, bx2, by2 = b.xyxy[0].tolist()
-            cls_id = int(b.cls[0].item())
-            label  = yolo_model.names[cls_id].lower()
-
-            if label == "abandon":
-                continue
-
-            scale_x = page.rect.width  / pix.width
-            scale_y = page.rect.height / pix.height
-            rect    = fitz.Rect(bx1 * scale_x, by1 * scale_y, bx2 * scale_x, by2 * scale_y)
-
-            # ── Text elements ──────────────────────────────────────────
-            if label in text_labels:
-                raw_text = page.get_text("text", clip=rect, sort=True).strip()
-                if not raw_text:
-                    continue
-                text_hash = re.sub(r'\s+', '', raw_text.lower())
-                if text_hash in seen_texts:
-                    continue
-                seen_texts.add(text_hash)
-                clean = _clean_markdown_text(raw_text)
-
-                if label == "title":
-                    current_section = clean
-                    md.append(f"### {clean}\n")
-                    blocks.append(BlockRecord(
-                        block_type = "heading",
-                        content    = clean,
-                        page_no    = page_no,
-                        page_label = page_label,
-                        section    = current_section,
-                        is_table   = False,
-                    ))
-
-                elif label == "plain text":
-                    md.append(f"{clean}\n")
-                    blocks.append(BlockRecord(
-                        block_type = "text",
-                        content    = clean,
-                        page_no    = page_no,
-                        page_label = page_label,
-                        section    = current_section,
-                        is_table   = False,
-                    ))
-
-                else:
-                    # captions / footnotes → text block, not heading
-                    md.append(f"*{clean}*\n")
-                    blocks.append(BlockRecord(
-                        block_type = "text",
-                        content    = clean,
-                        page_no    = page_no,
-                        page_label = page_label,
-                        section    = current_section,
-                        is_table   = False,
-                    ))
-
-            # ── Table ──────────────────────────────────────────────────
-            elif label == "table":
-                df = _extract_table_with_transformer(
-                    page           = page,
-                    img_array      = img_array,
-                    yolo_box       = b.xyxy[0].tolist(),
-                    page_img_width = pix.width,
-                    page_img_height= pix.height,
-                )
-                if df is not None and not df.empty:
-                    md_table = _dataframe_to_markdown(df)
-                    md.append(md_table + "\n")
-                    blocks.append(BlockRecord(
-                        block_type = "table",
-                        content    = md_table,
-                        page_no    = page_no,
-                        page_label = page_label,
-                        section    = current_section,
-                        is_table   = True,
-                    ))
-                else:
-                    logger.warning("Page %d: table extraction failed", page_no)
-                    warnings.append(f"Page {page_no}: table grid detection failed")
-
-        return blocks, md, current_section
-
-    # ── Folder parsing ─────────────────────────────────────────────────
     def parse_folder(
         self,
         folder_path: str | Path,
         recursive:   bool = False,
-        max_workers: int  = 4,
+        max_workers: int  = PARSE_FOLDER_MAX_WORKERS,
     ) -> list[ParseResult]:
         folder_path = Path(folder_path)
         if not folder_path.exists() or not folder_path.is_dir():
@@ -920,18 +626,20 @@ class DocumentParser:
         ]
 
         logger.info("Parsing %d file(s) | workers=%d", len(files), max_workers)
-        warmup_summary_model()
 
         if max_workers == 1:
             results = [self.parse_file(f) for f in files]
         else:
             results = []
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(self._parse_file_wrapper, f): f for f in files}
                 for future in as_completed(futures):
                     fp = futures[future]
                     try:
-                        results.append(future.result(timeout=PARSE_TIMEOUT_SEC))
+                        results.append(future.result())
+                    except FuturesTimeoutError:
+                        logger.error("Timed out | %s", fp)
+                        results.append(self._skipped(fp.name, fp.suffix, "Timed out"))
                     except Exception as e:
                         logger.error("Failed | %s | %s", fp, e)
                         results.append(self._skipped(fp.name, fp.suffix, str(e)))
@@ -949,11 +657,20 @@ class DocumentParser:
         except Exception as e:
             return self._skipped(file_path.name, file_path.suffix, str(e))
 
-    # ── Helpers ────────────────────────────────────────────────────────
-    def _save(self, file_path: Path, markdown: str, original_name: str = None) -> None:
+    def _save(
+        self,
+        file_path: Path,
+        markdown: str,
+        original_name: str = None,
+        doc_id: str = "",
+        domain: str = "",
+    ) -> None:
         if self.output_dir and markdown.strip():
             stem = Path(original_name).stem if original_name else file_path.stem
-            (self.output_dir / f"{stem}.md").write_text(markdown, encoding="utf-8")   
+            suffix = f"__{doc_id}" if doc_id else ""
+            target_dir = (self.output_dir / domain) if domain else self.output_dir
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / f"{stem}{suffix}.md").write_text(markdown, encoding="utf-8")
 
     def _skipped(self, file_name: str, file_type: str, reason: str) -> ParseResult:
         logger.warning("Skipped | %s | %s", file_name, reason)

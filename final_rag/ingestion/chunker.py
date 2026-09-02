@@ -1,9 +1,8 @@
 """
-ingestion/chunker.py
+final_rag/ingestion/chunker.py
 
-Chunker — consumes structured BlockRecord list from parser.
-Table detection comes from parser metadata (no regex detection).
-Stack: SentenceSplitter + tiktoken
+Semantic Chunking: Converts BlockRecord list -> ChunkResult list.
+Splitting, buffering, sentence formatting for tables, and smart deduplication.
 """
 
 from __future__ import annotations
@@ -13,527 +12,365 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Optional, List, Tuple
 
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import Document
 
-from final_rag.config import (
-    CHUNK_SIZE,
-    CHUNK_OVERLAP,
-    MIN_CHARS,
-    MIN_WORDS,
-    TABLE_MAX_TOKENS,
-    DEDUP_THRESHOLD,
-    DEDUP_SHINGLE_SIZE,
-)
-from final_rag.ingestion.parser import BlockRecord, PageRecord, ParseResult
+try:
+    from final_rag.config import (
+        CHUNK_SIZE,
+        CHUNK_OVERLAP,
+        MIN_CHARS,
+        MIN_WORDS,
+        TABLE_MAX_TOKENS,
+    )
+except ImportError:
+    from ..config import (
+        CHUNK_SIZE,
+        CHUNK_OVERLAP,
+        MIN_CHARS,
+        MIN_WORDS,
+        TABLE_MAX_TOKENS,
+    )
+
+from .parser import BlockRecord, ParseResult
 
 logger = logging.getLogger("ingestion.chunker")
 
+# Tuning constants
+DEDUP_THRESHOLD                 = 0.85
+DEDUP_SHINGLE_SIZE              = 6
+DEDUP_SHINGLE_SIZE_LONG         = 8
+DEDUP_LONG_TEXT_THRESHOLD_CHARS = 1200
+HINDI_TOKEN_SCALE_FACTOR        = 0.5
+MIN_CHARS_FACTUAL               = 20
+MAX_BOND_CHARS                  = 120
+NOISE_RATIO_THRESHOLD           = 0.6
 
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ChunkResult:
-    chunk_id:        str
-    chunk_index:     int
-    text:            str
-    page_no:         int       = 0
-    page_label:      str       = ""
-    page_range: list[int] = field(default_factory=lambda: [0, 0])
-    section:         str       = ""
-    is_table:        bool      = False
-    token_count:     int       = 0
-    chunk_year:      list[str] = field(default_factory=list)
-    keywords:        list[str] = field(default_factory=list)
-    doc_id:          str       = ""
-    source_file:     str       = ""
-    filename_tokens: list[str] = field(default_factory=list)
-    doc_year:        str       = ""
-    has_tables:      bool      = False
-    summary:         str       = ""
+    chunk_id:    str
+    chunk_index: int
+    text:        str
+    page_no:     int        = 0
+    page_label:  str        = ""
+    page_range:  list[int]  = field(default_factory=lambda: [0, 0])
+    heading:     str        = ""
+    is_table:    bool       = False
+    token_count: int        = 0
+    doc_id:      str        = ""
+    source_file: str        = ""
 
-
-# ---------------------------------------------------------------------------
-# Tokenizer
-# ---------------------------------------------------------------------------
 
 def _load_tokenizer():
     try:
         import tiktoken
-        encoder = tiktoken.get_encoding("cl100k_base")
-        logger.info("tiktoken loaded — cl100k_base")
-        return encoder
+        return tiktoken.get_encoding("cl100k_base")
     except Exception as exc:
         logger.warning("tiktoken unavailable, falling back to word count | %s", exc)
         return None
 
 
 def _count_tokens(text: str, tokenizer) -> int:
-    if tokenizer is None:
-        return len(text.split())
-    return len(tokenizer.encode(text))
+    return len(text.split()) if tokenizer is None else len(tokenizer.encode(text))
 
-
-# ---------------------------------------------------------------------------
-# chunk_id generator
-# ---------------------------------------------------------------------------
 
 def _make_chunk_id(doc_id: str, chunk_index: int) -> str:
-    raw = f"{doc_id}{chunk_index}"
-    return hashlib.md5(raw.encode()).hexdigest()[:12]
+    return hashlib.md5(f"{doc_id}{chunk_index}".encode()).hexdigest()[:12]
 
-
-# ---------------------------------------------------------------------------
-# Text utilities
-# ---------------------------------------------------------------------------
 
 def _sanitize_whitespace(text: str) -> str:
-    cleaned_lines = []
+    lines = []
     for line in text.split("\n"):
-        if "|" in line:
-            cleaned_lines.append(line.strip())
-        else:
-            cleaned_lines.append(re.sub(r" {3,}", " ", line).strip())
-    return "\n".join(cleaned_lines).strip()
+        lines.append(line.strip() if "|" in line else re.sub(r" {3,}", " ", line).strip())
+    return "\n".join(lines).strip()
 
 
-def _extract_years(text: str) -> list[str]:
-    return list(set(re.findall(r'\b(19\d{2}|20\d{2})\b', text)))
+_NOISE_RUN_RE = re.compile(r'[.\-_]{5,}')
 
 
 def _is_embeddable(text: str, is_table: bool = False) -> bool:
     if is_table:
         return True
-
     stripped = text.strip()
-    non_heading_lines = [
-        line.strip()
-        for line in stripped.split("\n")
-        if line.strip() and not line.strip().startswith("#")
-    ]
-
-    if not non_heading_lines:
+    non_heading = [l.strip() for l in stripped.split("\n") if l.strip() and not l.strip().startswith("#")]
+    if not non_heading:
         return False
 
-    FACTUAL_PATTERN = re.compile(
-        r'\d+|rs\.?|inr|₹|crore|lakh|\b(19|20)\d{2}\b',
-        re.IGNORECASE,
-    )
-    has_factual_content = bool(FACTUAL_PATTERN.search(stripped))
+    non_ws_len = len(re.sub(r'\s', '', stripped))
+    if non_ws_len > 0:
+        noise_len = sum(len(m) for m in _NOISE_RUN_RE.findall(stripped))
+        if noise_len / non_ws_len >= NOISE_RATIO_THRESHOLD:
+            return False
 
-    if has_factual_content:
-        return len(stripped) >= 20
-
+    factual = re.compile(r'\d+|rs\.?|inr|₹|crore|lakh|\b(19|20)\d{2}\b', re.IGNORECASE)
+    if factual.search(stripped):
+        return len(stripped) >= MIN_CHARS_FACTUAL
     return len(stripped.split()) >= MIN_WORDS and len(stripped) >= MIN_CHARS
 
 
-# ---------------------------------------------------------------------------
-# Table helpers
-# ---------------------------------------------------------------------------
-
-def _table_to_sentences(table_markdown: str) -> str:
-    lines = [
-        line.strip()
-        for line in table_markdown.strip().split("\n")
-        if line.strip() and not re.match(r"^\|[-| :]+\|$", line.strip())
-    ]
-
+def _table_to_sentences(table_markdown: str, tokenizer=None, max_tokens: int = TABLE_MAX_TOKENS) -> list[str]:
+    lines = [l.strip() for l in table_markdown.strip().split("\n") if l.strip() and not re.match(r"^\|[-| :]+\|$", l.strip())]
     if len(lines) < 2:
-        return table_markdown
-
-    headers = [cell.strip() for cell in lines[0].strip("|").split("|")]
-    sentences = []
-    dropped_rows = 0
-
-    for row_line in lines[1:]:
-        cells = [cell.strip() for cell in row_line.strip("|").split("|")]
+        return [table_markdown]
+    headers = [c.strip() for c in lines[0].strip("|").split("|")]
+    sentences, dropped = [], 0
+    for row in lines[1:]:
+        cells = [c.strip() for c in row.strip("|").split("|")]
         if len(cells) != len(headers):
-            dropped_rows += 1
+            dropped += 1
             continue
-        pairs = ", ".join(
-            f"{header}={cell}"
-            for header, cell in zip(headers, cells)
-            if cell
-        )
+        pairs = ", ".join(f"{h}={c}" for h, c in zip(headers, cells) if c)
         if pairs:
             sentences.append(pairs)
+    if dropped:
+        logger.warning("_table_to_sentences: dropped %d row(s) — column mismatch", dropped)
+    if not sentences:
+        return [table_markdown]
 
-    if dropped_rows:
-        logger.warning(
-            "_table_to_sentences: dropped %d row(s) due to column mismatch "
-            "(expected %d columns) — likely OCR noise or merged cells",
-            dropped_rows, len(headers),
-        )
+    groups: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for sentence in sentences:
+        sent_tokens = _count_tokens(sentence, tokenizer)
+        if current and current_tokens + sent_tokens > max_tokens:
+            groups.append("\n".join(current))
+            current, current_tokens = [], 0
+        current.append(sentence)
+        current_tokens += sent_tokens
+    if current:
+        groups.append("\n".join(current))
 
-    return "\n".join(sentences) if sentences else table_markdown
+    return groups
 
-
-# ---------------------------------------------------------------------------
-# Entity fingerprint for smart dedup
-# ---------------------------------------------------------------------------
 
 def _extract_entity_fingerprint(text: str) -> str:
     numbers  = re.findall(r'\d+', text)
     years    = re.findall(r'\b(19|20)\d{2}\b', text)
     entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
-    signature = "|".join(sorted(set(numbers + years + entities[:5])))
-    return hashlib.md5(signature.encode()).hexdigest()[:8]
+    sig = "|".join(sorted(set(numbers + years + entities[:5])))
+    return hashlib.md5(sig.encode()).hexdigest()[:8]
 
-
-# ---------------------------------------------------------------------------
-# Deduplication
-# ---------------------------------------------------------------------------
 
 def _dedup_exact(chunks: list[ChunkResult]) -> list[ChunkResult]:
-    seen_hashes: set[str] = set()
-    unique_chunks: list[ChunkResult] = []
-
-    for chunk in chunks:
-        normalised = re.sub(r"\s+", " ", chunk.text.strip().lower())
-        md5_hash   = hashlib.md5(normalised.encode()).hexdigest()
-
-        if md5_hash not in seen_hashes:
-            seen_hashes.add(md5_hash)
-            unique_chunks.append(chunk)
-        else:
-            logger.debug(
-                "Exact dedup dropped | file=%s | index=%d",
-                chunk.source_file, chunk.chunk_index,
-            )
-
-    return unique_chunks
+    seen, out = set(), []
+    for c in chunks:
+        h = hashlib.md5(re.sub(r"\s+", " ", c.text.strip().lower()).encode()).hexdigest()
+        if h not in seen:
+            seen.add(h)
+            out.append(c)
+    return out
 
 
-def _get_shingles(text: str, size: int = DEDUP_SHINGLE_SIZE) -> set[str]:
-    normalised = re.sub(r"\s+", " ", text.strip().lower())
-    return {normalised[i:i + size] for i in range(len(normalised) - size + 1)}
+def _get_shingles(text: str, size: int) -> set[str]:
+    norm = re.sub(r"\s+", " ", text.strip().lower())
+    return {norm[i:i+size] for i in range(len(norm) - size + 1)}
 
 
-def _dedup_near_smart(
-    chunks: list[ChunkResult],
-    threshold: float = DEDUP_THRESHOLD,
-) -> list[ChunkResult]:
-    kept_chunks: list[ChunkResult]    = []
-    kept_shingle_sets: list[set[str]] = []
-    kept_fingerprints: list[str]      = []
-
-    for chunk in chunks:
-        if chunk.is_table:
-            kept_chunks.append(chunk)
+def _dedup_near_smart(chunks: list[ChunkResult], threshold: float = DEDUP_THRESHOLD) -> list[ChunkResult]:
+    kept, kept_shingles, kept_fp = [], [], []
+    for c in chunks:
+        if c.is_table:
+            kept.append(c)
             continue
-
-        shingle_size          = 12 if len(chunk.text) > 500 else DEDUP_SHINGLE_SIZE
-        candidate_shingles    = _get_shingles(chunk.text, shingle_size)
-        candidate_fingerprint = _extract_entity_fingerprint(chunk.text)
-
-        is_near_duplicate = False
-
-        for i, existing_shingles in enumerate(kept_shingle_sets):
-            if candidate_fingerprint != kept_fingerprints[i]:
+        size = DEDUP_SHINGLE_SIZE_LONG if len(c.text) > DEDUP_LONG_TEXT_THRESHOLD_CHARS else DEDUP_SHINGLE_SIZE
+        shingles, fp = _get_shingles(c.text, size), _extract_entity_fingerprint(c.text)
+        dup = False
+        for i, existing in enumerate(kept_shingles):
+            if fp != kept_fp[i]:
                 continue
-
-            union_size = len(candidate_shingles | existing_shingles)
-            if union_size == 0:
-                continue
-            jaccard = len(candidate_shingles & existing_shingles) / union_size
-            if jaccard >= threshold:
-                is_near_duplicate = True
-                logger.debug(
-                    "Near dedup dropped | file=%s | index=%d | jaccard=%.2f",
-                    chunk.source_file, chunk.chunk_index, jaccard,
-                )
+            union = len(shingles | existing)
+            if union and len(shingles & existing) / union >= threshold:
+                dup = True
                 break
-
-        if not is_near_duplicate:
-            kept_chunks.append(chunk)
-            kept_shingle_sets.append(candidate_shingles)
-            kept_fingerprints.append(candidate_fingerprint)
-
-    return kept_chunks
+        if not dup:
+            kept.append(c)
+            kept_shingles.append(shingles)
+            kept_fp.append(fp)
+    return kept
 
 
-# ---------------------------------------------------------------------------
-# Buffer helpers
-# ---------------------------------------------------------------------------
+def _dominant_heading(blocks: list[BlockRecord]) -> str:
+    names = [b.section for b in blocks if b.section]
+    return Counter(names).most_common(1)[0][0] if names else ""
 
-def _dominant_section(blocks: list[BlockRecord]) -> str:
-    section_names = [block.section for block in blocks if block.section]
-    if not section_names:
-        return ""
-    return Counter(section_names).most_common(1)[0][0]
-
-
-# ---------------------------------------------------------------------------
-# Main chunker
-# ---------------------------------------------------------------------------
 
 class DocumentChunker:
-
     def __init__(
         self,
-        chunk_size: int    = CHUNK_SIZE,
-        chunk_overlap: int = CHUNK_OVERLAP,
+        chunk_size:    int   = CHUNK_SIZE,
+        chunk_overlap: int   = CHUNK_OVERLAP,
+        tokenizer            = None,
     ):
         self.chunk_size    = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.tokenizer     = _load_tokenizer()
-
-        self._splitter = SentenceSplitter(
-            chunk_size    = chunk_size,
-            chunk_overlap = chunk_overlap,
-            tokenizer     = self.tokenizer.encode if self.tokenizer else None,
+        self.tokenizer     = tokenizer or _load_tokenizer()
+        self._splitter     = SentenceSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+            tokenizer=self.tokenizer.encode if self.tokenizer else None,
         )
 
-        logger.info(
-            "DocumentChunker initialised | size=%d | overlap=%d",
-            chunk_size, chunk_overlap,
+        self._hindi_eff_size    = int(self.chunk_size * HINDI_TOKEN_SCALE_FACTOR)
+        self._hindi_eff_overlap = int(self.chunk_overlap * HINDI_TOKEN_SCALE_FACTOR)
+        self._hindi_splitter    = SentenceSplitter(
+            chunk_size=self._hindi_eff_size,
+            chunk_overlap=self._hindi_eff_overlap,
+            tokenizer=self.tokenizer.encode if self.tokenizer else None,
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _effective_splitter(self, doc_lang: str) -> tuple[SentenceSplitter, int, int]:
+        if doc_lang in ("hi", "mixed"):
+            return self._hindi_splitter, self._hindi_eff_size, self._hindi_eff_overlap
+        return self._splitter, self.chunk_size, self.chunk_overlap
 
     def chunk(self, parse_result: ParseResult) -> list[ChunkResult]:
-        if not parse_result.success:
-            logger.warning("Skipping failed ParseResult | %s", parse_result.file_name)
+        if not parse_result.success or not parse_result.blocks:
+            logger.warning("Skipping | %s — no success/blocks", parse_result.file_name)
             return []
 
-        if not parse_result.blocks:
-            logger.warning(
-                "No blocks in ParseResult | %s — nothing to chunk",
-                parse_result.file_name,
+        doc_lang = parse_result.meta.doc_lang if parse_result.meta else "en"
+        splitter, eff_size, eff_overlap = self._effective_splitter(doc_lang)
+        if doc_lang in ("hi", "mixed"):
+            logger.info(
+                "Language-scaled chunk sizing | %s | lang=%s | size=%d | overlap=%d",
+                parse_result.file_name, doc_lang, eff_size, eff_overlap,
             )
-            return []
-
-        logger.info(
-            "Chunking | file=%s | blocks=%d",
-            parse_result.file_name, len(parse_result.blocks),
-        )
 
         chunks = self._process_blocks(
-            blocks          = parse_result.blocks,
-            page_records    = parse_result.pages,
-            doc_id          = parse_result.doc_id,
-            source_file     = parse_result.file_name,
-            filename_tokens = parse_result.filename_tokens,
-            doc_year        = parse_result.doc_year,
-            has_tables      = parse_result.meta.has_tables if parse_result.meta else False,
-            summary         = parse_result.summary,
-            keywords        = parse_result.keywords,
+            blocks      = parse_result.blocks,
+            doc_id      = parse_result.doc_id,
+            source_file = parse_result.file_name,
+            splitter    = splitter,
+            chunk_size  = eff_size,
         )
-
         chunks = self._deduplicate(chunks, parse_result.file_name)
-        self._log_summary(chunks, parse_result.file_name)
+        logger.info("Done | %s | chunks=%d | tables=%d", parse_result.file_name, len(chunks), sum(1 for c in chunks if c.is_table))
         return chunks
 
-    def chunk_batch(
-        self, parse_results: list[ParseResult]
-    ) -> dict[str, list[ChunkResult]]:
-        results     = {pr.file_name: self.chunk(pr) for pr in parse_results}
-        total_chunks = sum(len(chunks) for chunks in results.values())
-        logger.info(
-            "Batch done | files=%d | total_chunks=%d",
-            len(results), total_chunks,
-        )
+    def chunk_batch(self, parse_results: list[ParseResult]) -> dict[str, list[ChunkResult]]:
+        results = {pr.file_name: self.chunk(pr) for pr in parse_results}
+        logger.info("Batch done | files=%d | total_chunks=%d", len(results), sum(len(v) for v in results.values()))
         return results
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _deduplicate(self, chunks: list[ChunkResult], file_name: str) -> list[ChunkResult]:
-        before  = len(chunks)
-        chunks  = _dedup_exact(chunks)
-        chunks  = _dedup_near_smart(chunks)
-        removed = before - len(chunks)
-        if removed:
-            logger.info(
-                "Dedup removed %d chunks | file=%s | before=%d after=%d",
-                removed, file_name, before, len(chunks),
-            )
+        before = len(chunks)
+        chunks = _dedup_near_smart(_dedup_exact(chunks))
+        if before - len(chunks):
+            logger.info("Dedup removed %d | file=%s", before - len(chunks), file_name)
         return chunks
 
-    def _log_summary(self, chunks: list[ChunkResult], file_name: str) -> None:
-        logger.info(
-            "Done | %s | chunks=%d | tables=%d",
-            file_name,
-            len(chunks),
-            sum(1 for c in chunks if c.is_table),
-        )
-
-    def _split_text(self, text: str) -> list[str]:
+    def _split_text(self, text: str, splitter: SentenceSplitter) -> list[str]:
         try:
-            nodes = self._splitter.get_nodes_from_documents([Document(text=text)])
+            nodes = splitter.get_nodes_from_documents([Document(text=text)])
         except Exception as exc:
             logger.warning("SentenceSplitter failed: %s", exc)
             return [text]
-
-        return [
-            (node.get_content() if hasattr(node, "get_content") else node.text).strip()
-            for node in nodes
-        ]
-
-    # ------------------------------------------------------------------
-    # Core block processing
-    # ------------------------------------------------------------------
+        return [(n.get_content() if hasattr(n, "get_content") else n.text).strip() for n in nodes]
 
     def _process_blocks(
         self,
-        blocks:          list[BlockRecord],
-        page_records:    list[PageRecord],
-        doc_id:          str       = "",
-        source_file:     str       = "",
-        filename_tokens: list      = None,
-        doc_year:        str       = "",
-        has_tables:      bool      = False,
-        summary:         str       = "",
-        keywords:        list      = None,
+        blocks: list[BlockRecord],
+        doc_id: str,
+        source_file: str,
+        splitter: SentenceSplitter,
+        chunk_size: int,
     ) -> list[ChunkResult]:
-
         chunks: list[ChunkResult] = []
-        chunk_index               = 0
-
+        chunk_index = 0
         text_buffer: list[BlockRecord] = []
-        buffer_token_count             = 0
+        buffer_tokens = 0
 
-        # ------------------------------------------------------------------
-        # flush_buffer
-        # ------------------------------------------------------------------
-        def flush_buffer() -> None:
+        def flush_buffer():
             nonlocal chunk_index
-
             if not text_buffer:
                 return
-
-            merged_text = "\n".join(
-                _sanitize_whitespace(block.content) for block in text_buffer
-            )
-
-            if not _is_embeddable(merged_text):
+            merged = "\n".join(_sanitize_whitespace(b.content) for b in text_buffer)
+            if not _is_embeddable(merged):
                 text_buffer.clear()
                 return
-
-            section = _dominant_section(text_buffer)
-
-            # CHANGE 1: read page directly from buffer blocks, no string inference
+            heading    = _dominant_heading(text_buffer)
             start_page = text_buffer[0].page_no
             end_page   = text_buffer[-1].page_no
             page_label = text_buffer[0].page_label
 
-            for split_text in self._split_text(merged_text):
+            for split_text in self._split_text(merged, splitter):
                 if not _is_embeddable(split_text):
                     continue
-
-                display_text = f"[{section}]\n{split_text}" if section else split_text
-
+                display = f"[{heading}]\n{split_text}" if heading else split_text
                 chunks.append(ChunkResult(
-                    chunk_id        = _make_chunk_id(doc_id, chunk_index),
-                    chunk_index     = chunk_index,
-                    text            = display_text,
-                    page_no         = start_page,
-                    page_label      = page_label,
-                    page_range      = [start_page, end_page],
-                    section         = section,
-                    is_table        = False,
-                    token_count     = _count_tokens(display_text, self.tokenizer),
-                    chunk_year      = _extract_years(split_text),
-                    doc_id          = doc_id,
-                    source_file     = source_file,
-                    filename_tokens = filename_tokens or [],
-                    doc_year        = doc_year,
-                    has_tables      = has_tables,
-                    summary         = summary,
-                    keywords        = keywords or [],
+                    chunk_id=_make_chunk_id(doc_id, chunk_index), chunk_index=chunk_index,
+                    text=display, page_no=start_page, page_label=page_label,
+                    page_range=[start_page, end_page], heading=heading, is_table=False,
+                    token_count=_count_tokens(display, self.tokenizer),
+                    doc_id=doc_id, source_file=source_file,
                 ))
                 chunk_index += 1
-
             text_buffer.clear()
 
-        # ------------------------------------------------------------------
-        # Main loop
-        # ------------------------------------------------------------------
-        for block_index, block in enumerate(blocks):
+        for i, block in enumerate(blocks):
             content = _sanitize_whitespace(block.content)
 
-            # CHANGE 2: heading prepended to buffer instead of dropped
             if block.block_type in ("heading", "title"):
                 flush_buffer()
+                buffer_tokens = 0
                 text_buffer.append(block)
                 continue
 
-            # table block
             if block.is_table:
-                flush_buffer()
-
-                start_page = block.page_no
-                end_page   = block.page_no
-
-                preceding_block = blocks[block_index - 1] if block_index > 0 else None
-                bonded_context  = ""
+                preceding = blocks[i-1] if i > 0 else None
+                bonded = ""
                 if (
-                    preceding_block
-                    and preceding_block.block_type == "text"
-                    and preceding_block.content.strip()
+                    preceding
+                    and preceding.block_type == "text"
+                    and preceding.content.strip()
+                    and len(preceding.content.strip()) <= MAX_BOND_CHARS
+                    and text_buffer
+                    and text_buffer[-1] is preceding
                 ):
-                    bonded_context = _sanitize_whitespace(preceding_block.content)
+                    bonded = _sanitize_whitespace(preceding.content)
+                    text_buffer.pop()
+
+                flush_buffer()
+                buffer_tokens = 0
 
                 if _count_tokens(content, self.tokenizer) > TABLE_MAX_TOKENS:
-                    content = _table_to_sentences(content)
+                    table_parts = _table_to_sentences(content, self.tokenizer, TABLE_MAX_TOKENS)
+                else:
+                    table_parts = [content]
 
-                full_text = (
-                    f"{bonded_context}\n{content}" if bonded_context else content
-                ).strip()
-
-                if not _is_embeddable(full_text, is_table=True):
-                    continue
-
-                display_text = (
-                    f"[{block.section}]\n{full_text}" if block.section else full_text
-                )
-
-                chunks.append(ChunkResult(
-                    chunk_id        = _make_chunk_id(doc_id, chunk_index),
-                    chunk_index     = chunk_index,
-                    text            = display_text,
-                    page_no         = start_page,
-                    page_label      = block.page_label,
-                    page_range      = [start_page, end_page],
-                    section         = block.section,
-                    is_table        = True,
-                    token_count     = _count_tokens(display_text, self.tokenizer),
-                    chunk_year      = _extract_years(full_text),
-                    doc_id          = doc_id,
-                    source_file     = source_file,
-                    filename_tokens = filename_tokens or [],
-                    doc_year        = doc_year,
-                    has_tables      = has_tables,
-                    summary         = summary,
-                    keywords        = keywords or [],
-                ))
-                chunk_index += 1
+                for part_idx, part in enumerate(table_parts):
+                    if bonded and part_idx == 0:
+                        full_text = f"{bonded}\n{part}".strip()
+                    else:
+                        full_text = part
+                    if not _is_embeddable(full_text, is_table=True):
+                        continue
+                    display = f"[{block.section}]\n{full_text}" if block.section else full_text
+                    chunks.append(ChunkResult(
+                        chunk_id=_make_chunk_id(doc_id, chunk_index), chunk_index=chunk_index,
+                        text=display, page_no=block.page_no, page_label=block.page_label,
+                        page_range=[block.page_no, block.page_no], heading=block.section, is_table=True,
+                        token_count=_count_tokens(display, self.tokenizer),
+                        doc_id=doc_id, source_file=source_file,
+                    ))
+                    chunk_index += 1
                 continue
 
-            # text block
             if not _is_embeddable(content):
                 continue
 
-            section_changed = (
-                text_buffer and block.section != text_buffer[-1].section
-            )
-            if section_changed:
+            if text_buffer and block.section != text_buffer[-1].section:
                 flush_buffer()
-                buffer_token_count = 0
+                buffer_tokens = 0
 
             text_buffer.append(block)
-            buffer_token_count += _count_tokens(content, self.tokenizer)
-
-            if buffer_token_count >= self.chunk_size:
+            buffer_tokens += _count_tokens(content, self.tokenizer)
+            if buffer_tokens >= chunk_size:
                 flush_buffer()
-                buffer_token_count = 0
+                buffer_tokens = 0
 
         flush_buffer()
-
         return chunks

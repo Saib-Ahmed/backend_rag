@@ -1,162 +1,212 @@
 """
-agent/orchestrator.py
+final_rag/agent/orchestrator.py
 
-Orchestrator — final stage of the RAG pipeline.
-Pipeline: QueryCleaner → Retriever → Assembler → Orchestrator → Response
-
+Orchestrator: Coordinates Query Cleaner, Retriever, Assembler, and Claude Generator.
+Includes multi-turn history sanitization (350 char excerpt cap, 1500 token history budget),
+active document routing, chitchat bypass, and token streaming.
 """
 
 from __future__ import annotations
-
 import json
 import logging
+import re
 import time
 import traceback
-from typing import Generator
+from typing import Generator, List, Dict, Any, Optional
 
-import ollama
+try:
+    import final_rag.config as config
+except ImportError:
+    from .. import config
 
-from final_rag.agent.models import OrchestratorResult, SourceInfo, AssembledResult, CleanedQuery
-from final_rag.agent.query_cleaner import get_cleaner
-from final_rag.agent.retriever import get_retriever
-from final_rag.agent.assembler import get_assembler
-from final_rag.ingestion.embedder import OllamaEmbedder
-from final_rag.prompts.generator_prompt import get_generator_prompt, has_citations
-from final_rag.agent.claude_client import ClaudeClient
-from final_rag.agent.nvidia_client import NvidiaClient
-import final_rag.config as config
+from .models import OrchestratorResult, SourceInfo, AssembledResult, CleanedQuery
+from .query_cleaner import get_cleaner
+from .retriever import get_retriever
+from .assembler import get_assembler
+from .claude_client import ClaudeClient
+from ..ingestion.embedder import OllamaEmbedder
+from ..prompts.generator_prompt import get_generator_prompt, get_chitchat_prompt
 
 logger = logging.getLogger("agent.orchestrator")
 
-# ── Constants ──────────────────────────────────────────────────────────
-MODEL             = config.GENERATOR_MODEL
-MAX_HISTORY_TURNS = 3
-MAX_RETRIES       = 1
-NUM_CTX           = config.NUM_CTX
-MAX_TOKENS        = config.MAX_TOKENS
+MODEL                    = getattr(config, "GENERATOR_MODEL", "claude-3-5-sonnet-20241022")
+MAX_HISTORY_TURNS        = getattr(config, "MAX_HISTORY_TURNS", 3)
+MAX_TOKENS               = getattr(config, "CLAUDE_CHAT_STREAM_MAX_TOKENS", 9000)
+CHITCHAT_MAX_TOKENS      = getattr(config, "CHITCHAT_MAX_TOKENS", 512)
+MAX_HISTORY_ANSWER_CHARS = getattr(config, "MAX_HISTORY_ANSWER_CHARS", 350)
+MAX_HISTORY_TOTAL_TOKENS = getattr(config, "MAX_HISTORY_TOTAL_TOKENS", 1500)
 
-CLARIFICATION_MESSAGE = (
-    "I couldn't find specific information about that in the uploaded documents. "
-    "Could you clarify your question or provide more details? "
-    "For example, which document or section are you referring to?"
-)
-
-FALLBACK_ERROR_MESSAGE = (
-    "Something went wrong while generating the answer. Please try again."
-)
+CLARIFICATION_MESSAGE  = "I couldn't find specific information about that in the uploaded documents. Could you please rephrase or specify which case/order you are looking for?"
+FALLBACK_ERROR_MESSAGE = "An unexpected error occurred while processing your request. Please try again."
 
 
-# ── Orchestrator ───────────────────────────────────────────────────────
 class Orchestrator:
-
     def __init__(self, embedder: OllamaEmbedder):
-        self.embedder      = embedder
-        self.cleaner       = get_cleaner(model=config.CLEANER_MODEL)
-        self.retriever     = get_retriever(embedder=embedder)
-        self.assembler     = get_assembler()
-        self.client        = ollama.Client(host=config.OLLAMA_BASE_URL)
-        self.claude_client = ClaudeClient()
-        self.nvidia_client = NvidiaClient()
-        logger.info("Orchestrator initialized | generator=%s", MODEL)
+        self.cleaner   = get_cleaner()
+        self.retriever = get_retriever(embedder)
+        self.assembler = get_assembler()
+        self.client    = ClaudeClient(model=MODEL)
 
-    # ── Main pipeline entry ────────────────────────────────────────────
     def run(
         self,
-        query:           str,
-        history:         list[dict] = None,
-        active_document: str = None,
-        use_claude:      bool = False,
-        model:           str | None = None,
-    ) -> Generator[str, None, None]:
-
+        query: str,
+        history: list[dict] = None,
+        active_doc_id: Optional[str] = None,
+        active_doc_filename: Optional[str] = None,
+        active_doc_ids: Optional[List[str]] = None,
+        active_doc_filenames: Optional[List[str]] = None,
+        active_documents: Optional[List[str]] = None,
+        domain: str = "",
+    ) -> OrchestratorResult:
         total_start = time.perf_counter()
-        history     = history or []
-        times: dict[str, float] = {}
+        times = {}
 
         try:
-            # ── Stage 1: Clean ─────────────────────────────────────────
-            t       = time.perf_counter()
-            cleaned = self.cleaner.clean(query, active_document=active_document, use_claude=use_claude, model=model)
+            # 1. Cleaner
+            t = time.perf_counter()
+            cleaned = self.cleaner.clean(
+                query,
+                active_documents    = active_documents,
+                active_doc_id       = active_doc_id,
+                active_doc_filename = active_doc_filename,
+                active_doc_ids      = active_doc_ids,
+                active_doc_filenames = active_doc_filenames,
+            )
             times["cleaner"] = round(time.perf_counter() - t, 3)
-            logger.info(
-                "[Orchestrator] Cleaned | %.3fs | scope=%s structure=%s specificity=%s",
-                times["cleaner"], cleaned.target_scope,
-                cleaned.answer_structure, cleaned.specificity,
-            )
 
-            # ── Stage 2: Retrieve ──────────────────────────────────────
-            t      = time.perf_counter()
-            chunks = self.retriever.retrieve(cleaned)
+            history_str = self._format_history(history or [])
+
+            # Chitchat branch
+            if cleaned.is_chitchat:
+                t = time.perf_counter()
+                prompt = get_chitchat_prompt().format(
+                    history_str       = history_str,
+                    original_query    = query,
+                    detected_language = cleaned.detected_language,
+                )
+                answer = self.client.generate(prompt=prompt, max_tokens=CHITCHAT_MAX_TOKENS)
+                times["generator"] = round(time.perf_counter() - t, 3)
+                total = round(time.perf_counter() - total_start, 3)
+                return OrchestratorResult(
+                    answer         = answer,
+                    sources        = [],
+                    cleaned_query  = cleaned.primary_query,
+                    pipeline_times = times,
+                    total_time_sec = total,
+                )
+
+            # 2. Retriever
+            t = time.perf_counter()
+            chunks = self.retriever.retrieve(cleaned, domain=domain)
             times["retriever"] = round(time.perf_counter() - t, 3)
-            logger.info(
-                "[Orchestrator] Retrieved %d chunks | %.3fs",
-                len(chunks), times["retriever"],
-            )
 
-            # ── Stage 3: Assemble ──────────────────────────────────────
-            t         = time.perf_counter()
-            assembled = self.assembler.assemble(cleaned, chunks)
+            # 3. Assembler
+            t = time.perf_counter()
+            assembled = self.assembler.assemble(chunks, cleaned)
             times["assembler"] = round(time.perf_counter() - t, 3)
-            logger.info(
-                "[Orchestrator] Assembled | not_found=%s weak=%s "
-                "tables=%s structure=%s sources=%d | %.3fs",
-                assembled.not_found, assembled.has_weak_match,
-                assembled.has_tables, assembled.answer_structure,
-                assembled.sources_count, times["assembler"],
+
+            if assembled.not_found:
+                total = round(time.perf_counter() - total_start, 3)
+                return OrchestratorResult(
+                    answer               = CLARIFICATION_MESSAGE,
+                    sources              = [],
+                    clarification_needed = True,
+                    cleaned_query        = cleaned.primary_query,
+                    pipeline_times       = times,
+                    total_time_sec       = total,
+                )
+
+            # 4. Generator
+            t = time.perf_counter()
+            template = get_generator_prompt(assembled.answer_structure)
+            prompt   = template.format(
+                history_str       = history_str,
+                original_query    = query,
+                detected_language = cleaned.detected_language,
+                context_block     = assembled.context_block,
+            )
+            answer = self.client.generate(prompt=prompt, max_tokens=MAX_TOKENS)
+            times["generator"] = round(time.perf_counter() - t, 3)
+
+            total = round(time.perf_counter() - total_start, 3)
+            return OrchestratorResult(
+                answer         = answer,
+                sources        = assembled.sources,
+                cleaned_query  = cleaned.primary_query,
+                pipeline_times = times,
+                total_time_sec = total,
             )
 
-            # no relevant chunks found — ask user to clarify
+        except Exception as e:
+            logger.error("Orchestrator error: %s\n%s", e, traceback.format_exc())
+            return OrchestratorResult(
+                answer = FALLBACK_ERROR_MESSAGE,
+                error  = str(e),
+                total_time_sec = round(time.perf_counter() - total_start, 3),
+            )
+
+    def stream(
+        self,
+        query: str,
+        history: list[dict] = None,
+        active_doc_id: Optional[str] = None,
+        active_doc_filename: Optional[str] = None,
+        active_doc_ids: Optional[List[str]] = None,
+        active_doc_filenames: Optional[List[str]] = None,
+        active_documents: Optional[List[str]] = None,
+        domain: str = "",
+    ) -> Generator[str, None, None]:
+        total_start = time.perf_counter()
+        times = {}
+
+        try:
+            t = time.perf_counter()
+            cleaned = self.cleaner.clean(
+                query,
+                active_documents     = active_documents,
+                active_doc_id        = active_doc_id,
+                active_doc_filename  = active_doc_filename,
+                active_doc_ids       = active_doc_ids,
+                active_doc_filenames = active_doc_filenames,
+            )
+            times["cleaner"] = round(time.perf_counter() - t, 3)
+            history_str = self._format_history(history or [])
+
+            if cleaned.is_chitchat:
+                t = time.perf_counter()
+                yield from self._stream_chitchat(query, cleaned.detected_language, history_str, t)
+                return
+
+            t = time.perf_counter()
+            chunks = self.retriever.retrieve(cleaned, domain=domain)
+            times["retriever"] = round(time.perf_counter() - t, 3)
+
+            t = time.perf_counter()
+            assembled = self.assembler.assemble(chunks, cleaned)
+            times["assembler"] = round(time.perf_counter() - t, 3)
+
             if assembled.not_found:
                 yield CLARIFICATION_MESSAGE
                 return
 
-            # ── Stage 4: Generate ──────────────────────────────────────
-            history_str = self._format_history(history)
             t = time.perf_counter()
-
-            # Buffer tokens so we can run has_citations() after stream ends (fix #7)
-            answer_buffer: list[str] = []
-            for token in self._stream_generate(
+            yield from self._stream_generate(
                 original_query    = query,
-                improved_query    = cleaned.improved_query,
+                improved_query    = cleaned.primary_query,
                 detected_language = cleaned.detected_language,
                 assembled         = assembled,
                 history_str       = history_str,
                 stage_start       = t,
-                use_claude        = use_claude,
-                model             = model,
-            ):
-                answer_buffer.append(token)
-                yield token
+            )
             times["generator"] = round(time.perf_counter() - t, 3)
 
-            # Warn if a substantive answer has no inline file citations
-            full_answer = "".join(answer_buffer)
-            if len(full_answer.split()) > 20 and not has_citations(full_answer):
-                logger.warning(
-                    "[Orchestrator] ⚠️  Citation-less answer detected (>20 words, no [file, Page X] markers). "
-                    "LLM skipped citation formatting. query=%r",
-                    query[:120],
-                )
-
-            # ── Metadata suffix — sources for frontend citation ────────
             if assembled.sources:
                 yield self._build_metadata_payload(assembled.sources)
 
-            total = round(time.perf_counter() - total_start, 3)
-            logger.info(
-                "[Orchestrator] Done | total=%.3fs | times=%s",
-                total, times,
-            )
-
         except Exception as e:
-            logger.error(
-                "[Orchestrator] Pipeline failed: %s\n%s",
-                e, traceback.format_exc(),
-            )
+            logger.error("Streaming error: %s\n%s", e, traceback.format_exc())
             yield FALLBACK_ERROR_MESSAGE
 
-    # ── Stream generator output ────────────────────────────────────────
     def _stream_generate(
         self,
         original_query:    str,
@@ -165,8 +215,6 @@ class Orchestrator:
         assembled:         AssembledResult,
         history_str:       str,
         stage_start:       float,
-        use_claude:        bool = False,
-        model:             str | None = None,
     ) -> Generator[str, None, None]:
         template = get_generator_prompt(assembled.answer_structure)
         prompt   = template.format(
@@ -176,117 +224,43 @@ class Orchestrator:
             context_block     = assembled.context_block,
         )
 
-        display_model = model if model else (config.CLAUDE_MODEL if use_claude else MODEL)
-        logger.info(
-            "[Orchestrator] Starting stream | model=%s think=False num_ctx=%d max_tokens=%d | use_claude=%s",
-            display_model, NUM_CTX, config.CLAUDE_MAX_TOKENS if (use_claude or model == "cloud") else MAX_TOKENS, use_claude or model == "cloud",
-        )
-
         try:
-            if use_claude or model == "cloud":
-                stream = self.claude_client.chat_stream(
-                    messages    = [{"role": "user", "content": prompt}],
-                    temperature = config.GENERATOR_TEMPERATURE,
-                    max_tokens  = config.CLAUDE_MAX_TOKENS,
-                )
-                first_token_time = None
-                token_count      = 0
-                for token in stream:
-                    if first_token_time is None:
-                        first_token_time = time.perf_counter()
-                        logger.info(
-                            "[Orchestrator] [Claude] 🟢 First token received | "
-                            "time_to_first_token=%.3fs",
-                            first_token_time - stage_start,
-                        )
-                    token_count += 1
-                    yield token
-                logger.info("[Orchestrator] [Claude] Stream complete | total_tokens=%d", token_count)
-                return
-
-            elif model in getattr(config, "NVIDIA_MODELS", []):
-                stream = self.nvidia_client.chat_stream(
-                    model       = model,
-                    messages    = [{"role": "user", "content": prompt}],
-                    temperature = config.GENERATOR_TEMPERATURE,
-                    max_tokens  = MAX_TOKENS,
-                )
-                first_token_time = None
-                token_count      = 0
-                for token in stream:
-                    if first_token_time is None:
-                        first_token_time = time.perf_counter()
-                        logger.info(
-                            "[Orchestrator] [Nvidia] 🟢 First token received | "
-                            "time_to_first_token=%.3fs",
-                            first_token_time - stage_start,
-                        )
-                    token_count += 1
-                    yield token
-                logger.info("[Orchestrator] [Nvidia] Stream complete | model=%s | total_tokens=%d", model, token_count)
-                return
-
-            stream = self.client.chat(
-                model      = MODEL,
-                messages   = [{"role": "user", "content": prompt}],
-                # keep_alive = 0,
-                stream     = True,
-                think      = False,
-                options    = {
-                    "temperature": config.GENERATOR_TEMPERATURE,
-                    "num_predict": MAX_TOKENS,
-                    "num_ctx":     NUM_CTX,
-                },
+            stream = self.client.chat_stream(
+                messages    = [{"role": "user", "content": prompt}],
+                temperature = getattr(config, "GENERATOR_TEMPERATURE", 0.25),
+                max_tokens  = MAX_TOKENS,
             )
-
-            token_count      = 0
-            think_chunks     = 0
-            first_token_time = None
-
-            for chunk in stream:
-                if not hasattr(chunk, "message"):
-                    logger.warning("[Orchestrator] Unexpected chunk format: %s", chunk)
-                    continue
-
-                msg = chunk.message
-
-                # ── Check if thinking is leaking through ───────────────
-                if hasattr(msg, "thinking") and msg.thinking:
-                    think_chunks += 1
-                    logger.warning(
-                        "[Orchestrator] ⚠️  THINKING chunk detected! "
-                        "think=False is NOT working | chunk_no=%d | preview=%s",
-                        think_chunks, str(msg.thinking)[:120],
-                    )
-
-                token = msg.content
-                if token:
-                    if first_token_time is None:
-                        first_token_time = time.perf_counter()
-                        logger.info(
-                            "[Orchestrator] 🟢 First token received | "
-                            "time_to_first_token=%.3fs | "
-                            "thinking_was_silent=%s",
-                            first_token_time - stage_start,
-                            (first_token_time - stage_start) > 30,  # >30s gap = silent thinking
-                        )
-                    token_count += 1
-                    yield token
-
-            # ── Final stream summary ───────────────────────────────────
-            logger.info(
-                "[Orchestrator] Stream complete | "
-                "total_tokens=%d | think_chunks=%d | think_off_working=%s",
-                token_count,
-                think_chunks,
-                "✅ YES" if think_chunks == 0 else "❌ NO — thinking is leaking",
-            )
-
+            for token in stream:
+                yield token
         except Exception as e:
-            logger.error("[Orchestrator] Stream failed: %s", e)
+            logger.error("Stream failed: %s", e)
             yield FALLBACK_ERROR_MESSAGE
 
-    # ── Helpers ────────────────────────────────────────────────────────
+    def _stream_chitchat(
+        self,
+        original_query:    str,
+        detected_language: str,
+        history_str:       str,
+        stage_start:       float,
+    ) -> Generator[str, None, None]:
+        template = get_chitchat_prompt()
+        prompt   = template.format(
+            history_str       = history_str,
+            original_query    = original_query,
+            detected_language = detected_language,
+        )
+        try:
+            stream = self.client.chat_stream(
+                messages    = [{"role": "user", "content": prompt}],
+                temperature = getattr(config, "GENERATOR_TEMPERATURE", 0.25),
+                max_tokens  = CHITCHAT_MAX_TOKENS,
+            )
+            for token in stream:
+                yield token
+        except Exception as e:
+            logger.error("Chitchat stream failed: %s", e)
+            yield FALLBACK_ERROR_MESSAGE
+
     @staticmethod
     def _build_metadata_payload(sources: list[SourceInfo]) -> str:
         try:
@@ -296,14 +270,49 @@ class Orchestrator:
             return ""
 
     @staticmethod
+    def _clean_history_text(text: str) -> str:
+        if not text:
+            return ""
+        text = re.sub(r"\[[^\]]*\]", "", text)
+        text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+        text = re.sub(r"[*_]{1,3}", "", text)
+        text = re.sub(r"^-\s+", "", text, flags=re.MULTILINE)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _truncate_excerpt(text: str, max_chars: int = MAX_HISTORY_ANSWER_CHARS) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rsplit(" ", 1)[0] + "..."
+
+    @staticmethod
     def _format_history(history: list[dict]) -> str:
         if not history:
             return "No previous context."
+
         recent = history[-MAX_HISTORY_TURNS:]
-        return "\n".join(
-            f"User: {t.get('question', '')}\nAssistant: {t.get('answer', '')}"
-            for t in recent
-        )
+        kept_reversed: list[str] = []
+        total_tokens = 0
+
+        for t in reversed(recent):
+            question       = (t.get("question", "") or "").strip()
+            answer_raw     = t.get("answer", "") or ""
+            answer_clean   = Orchestrator._clean_history_text(answer_raw)
+            answer_excerpt = Orchestrator._truncate_excerpt(answer_clean)
+
+            entry        = f"User: {question}\nAssistant: {answer_excerpt}"
+            entry_tokens = int(len(entry.split()) * getattr(config, "TOKENS_PER_WORD", 1.3))
+
+            if total_tokens + entry_tokens > MAX_HISTORY_TOTAL_TOKENS:
+                break
+
+            kept_reversed.append(entry)
+            total_tokens += entry_tokens
+
+        if not kept_reversed:
+            return "No previous context."
+
+        return "\n".join(reversed(kept_reversed))
 
 
 def get_orchestrator(embedder: OllamaEmbedder) -> Orchestrator:

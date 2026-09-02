@@ -520,7 +520,8 @@ def chat_stream(req: ChatRequest, request: Request):
                 "query": req.query,
                 "session_id": session_id,
                 "use_claude": is_cloud,
-                "model": req.model
+                "model": req.model,
+                "files": req.files,
             }, stream=True, timeout=900)
             
             full_answer = []

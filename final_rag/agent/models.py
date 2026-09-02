@@ -5,7 +5,7 @@ Used by: retriever, assembler, orchestrator, database, and FastAPI.
 """
 
 from __future__ import annotations
-from typing import Any, Optional
+from typing import Any, Optional, List, Dict
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -21,30 +21,68 @@ class ComparisonArm(BaseModel):
     label:           str               # e.g. "MP Policy 2022"
     year:            Optional[str]     = None
     filename_tokens: list[str]         = Field(default_factory=list)
+    query:           Optional[str]     = None
+    filter_hints:    dict[str, Any]    = Field(default_factory=dict)
 
 
 class CleanedQuery(BaseModel):
-    original_query:    str
-    improved_query:    str
-    detected_language: str = "english"
+    original_query:    str                 = ""
+    improved_query:    str                 = ""
+    detected_language: str                 = "english"
+    intent:            str                 = "document_query"
 
-    # ── 3 signals ──────────────────────────────────────────────────────
-    target_scope:      str = "broad"       # "single" / "few" / "broad"
-    answer_structure:  str = "direct"      # "direct" / "compare" / "synthesize"
-    specificity:       str = "low"         # "high" / "medium" / "low"
+    # ── 3 signals ────────────────────────────────────────────
+    target_scope:      str                 = "broad"       # "single" / "few" / "broad"
+    answer_structure:  str                 = "direct"      # "direct" / "compare" / "synthesize"
+    specificity:       str                 = "low"         # "high" / "medium" / "low"
 
-    # ── retrieval hints ────────────────────────────────────────────────
+    # ── retrieval hints ──────────────────────────────────────
     filter_hints:      dict[str, Any]      = Field(default_factory=dict)
     comparison_arms:   list[ComparisonArm] = Field(default_factory=list)
-    active_document:   Optional[str]       = None   # passed from API layer
+    active_documents:  list[str]           = Field(default_factory=list)
 
-    # ── subqueries ─────────────────────────────────────────────────────
+    # ── subqueries ───────────────────────────────────────────
     subqueries:        list[Subquery]      = Field(default_factory=list)
     all_subqueries:    list[Subquery]      = Field(default_factory=list)
 
-    # ── meta ───────────────────────────────────────────────────────────
-    processing_time_sec: float         = 0.0
-    warning:             Optional[str] = None
+    # ── meta ─────────────────────────────────────────────────
+    processing_time_sec: float             = 0.0
+    warning:             Optional[str]     = None
+
+    # ── compatibility fields/properties ──────────────────────
+    active_doc_id:        Optional[str]     = None
+    active_doc_ids:       list[str]         = Field(default_factory=list)
+    extracted_keywords:   list[str]         = Field(default_factory=list)
+    confidence:           float             = 1.0
+    is_valid:             bool              = True
+
+    @property
+    def primary_query(self) -> str:
+        return self.improved_query or self.original_query
+
+    @property
+    def scope(self) -> str:
+        if len(self.active_documents) == 1:
+            return "active"
+        if len(self.active_documents) > 1:
+            return "active_compare"
+        return self.target_scope
+
+    @property
+    def is_chitchat(self) -> bool:
+        return self.intent == "chitchat"
+
+    @property
+    def active_doc_filename(self) -> Optional[str]:
+        return self.active_documents[0] if len(self.active_documents) == 1 else None
+
+    @property
+    def active_doc_filenames(self) -> list[str]:
+        return self.active_documents if len(self.active_documents) > 1 else []
+
+    @property
+    def raw_subqueries(self) -> list[str]:
+        return [sq.query if isinstance(sq, Subquery) else str(sq) for sq in self.subqueries]
 
 
 # ─────────────────────────────────────────
@@ -58,31 +96,30 @@ class RetrievedChunk(BaseModel):
     page_no:               int       = 0
     page_label:            str       = ""
     chunk_index:           int       = 0
-    section:               str       = ""
+    heading:               str       = ""
     is_table:              bool      = False
     is_table_with_context: bool      = False
     char_count:            int       = 0
     token_count:           int       = 0
     warnings:              list[str] = Field(default_factory=list)
-    chunk_year:            list[str] = Field(default_factory=list)
+    chunk_years:           list[str] = Field(default_factory=list)
+    entities:              list[str] = Field(default_factory=list)
 
-    # ── scores ─────────────────────────────────────────────────────────
+    # ── scores ───────────────────────────────────────────────
     qdrant_score:          float = 0.0
     rerank_score:          float = 0.0
 
-    # ── flags ──────────────────────────────────────────────────────────
+    # ── flags ────────────────────────────────────────────────
     is_weak_match:         bool  = False
-    is_temporal_expanded:  bool  = False
 
-    # ── citation ───────────────────────────────────────────────────────
+    # ── citation ─────────────────────────────────────────────
     source_tag:            str   = ""
     arm_label:             str   = ""   # which comparison arm this belongs to
 
-    # ── metadata ───────────────────────────────────────────────────────
+    # ── metadata ─────────────────────────────────────────────
     doc_year:              str   = ""
-    doc_org:               str   = ""
+    doc_lang:              str   = ""
     doc_id:                str   = ""
-    summary:               str   = ""
 
 
 # ─────────────────────────────────────────
@@ -92,14 +129,12 @@ class SourceInfo(BaseModel):
     file_name:   str
     pages:       list[str]
     chunk_count: int
-    chunks:      list[dict] = Field(default_factory=list)
 
     def model_dump(self) -> dict:
         return {
             "file_name":   self.file_name,
             "pages":       self.pages,
             "chunk_count": self.chunk_count,
-            "chunks":      self.chunks,
         }
 
 

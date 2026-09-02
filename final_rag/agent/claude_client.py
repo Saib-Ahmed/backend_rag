@@ -1,7 +1,7 @@
 """
-agent/claude_client.py
+final_rag/agent/claude_client.py
 
-Claude API client (single model: claude-sonnet-5).
+Claude API client (single model: claude-sonnet-5 or configured model).
 Note: Sonnet 5 uses adaptive thinking by default and does not accept a
 custom `temperature` parameter — the API rejects it with a 400 if sent.
 So temperature is intentionally NOT included in the payload.
@@ -15,12 +15,14 @@ from typing import Generator
 
 import requests
 
-import final_rag.config as config
+try:
+    import final_rag.config as config
+except ImportError:
+    from .. import config
 
 logger = logging.getLogger("agent.claude_client")
 
 ENDPOINT = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_VERSION = "2023-06-01"
 
 
 class ClaudeGenerationError(Exception):
@@ -29,50 +31,52 @@ class ClaudeGenerationError(Exception):
 
 class ClaudeClient:
     def __init__(self, model: str | None = None, api_key: str | None = None):
-        self.model   = model or config.CLAUDE_MODEL
-        self.api_key = api_key or config.CLAUDE_API_KEY
+        self.model = model or getattr(config, "CLAUDE_MODEL", "claude-sonnet-5")
+        self.api_key = api_key or getattr(config, "CLAUDE_API_KEY", "")
         if not self.api_key:
             logger.warning("[ClaudeClient] CLAUDE_API_KEY not set — calls will fail.")
 
     def _headers(self) -> dict:
         return {
-            "x-api-key":          self.api_key,
-            "anthropic-version":  ANTHROPIC_VERSION,
-            "content-type":       "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": getattr(config, "ANTHROPIC_VERSION", "2023-06-01"),
+            "content-type": "application/json",
         }
 
     # ── Non-streaming: used by QueryCleaner ────────────────────────────
 
     def generate(
         self,
-        system:      str,
         prompt:      str,
-        temperature: float = 0.0,
+        system:      str = "",
+        temperature: float = 0.0,   # kept in signature for compat, NOT sent to API
         max_tokens:  int | None = None,
     ) -> str:
         """
-        Single call to Claude (no fallback — one model).
+        Single call to Claude.
         Raises ClaudeGenerationError on any hard failure.
         """
         if max_tokens is None:
-            max_tokens = getattr(config, "CLAUDE_MAX_TOKENS", 8192)
+            max_tokens = getattr(config, "CLAUDE_GENERATE_MAX_TOKENS", 3000)
 
         payload = {
-            "model":      self.model,
+            "model": self.model,
             "max_tokens": max_tokens,
-            "system":     system,
-            "messages":   [{"role": "user", "content": prompt}],
-            # temperature intentionally omitted — claude-sonnet-5 rejects it (adaptive thinking)
+            "messages": [{"role": "user", "content": prompt}],
         }
+        if system:
+            payload["system"] = system
 
         try:
             resp = requests.post(
-                ENDPOINT, headers=self._headers(), json=payload, timeout=120,
+                ENDPOINT,
+                headers=self._headers(),
+                json=payload,
+                timeout=getattr(config, "CLAUDE_HTTP_TIMEOUT_SEC", 120),
             )
             if not resp.ok:
-                logger.error("[ClaudeClient] generate() HTTP %s | %s", resp.status_code, resp.text[:300])
+                logger.error("[ClaudeClient] Status: %s | Body: %s", resp.status_code, resp.text)
             resp.raise_for_status()
-            resp.encoding = 'utf-8'
             data = resp.json()
 
             content_blocks = data.get("content", [])
@@ -91,12 +95,12 @@ class ClaudeClient:
             logger.error("[ClaudeClient] generate() failed | model=%s | error=%s", self.model, e)
             raise ClaudeGenerationError(f"Claude generate() failed: {e}") from e
 
-    # ── Streaming: used by Orchestrator ─────────────────────────────────
+    # ── Streaming: used by Orchestrator ───────────────────────────────
 
     def chat_stream(
         self,
         messages:    list[dict],
-        temperature: float = 1.0,
+        temperature: float = 1.0,   # kept in signature for compat, NOT sent to API
         max_tokens:  int | None = None,
         system:      str | None = None,
     ) -> Generator[str, None, None]:
@@ -104,14 +108,13 @@ class ClaudeClient:
         Streams tokens from Claude.
         """
         if max_tokens is None:
-            max_tokens = getattr(config, "CLAUDE_MAX_TOKENS", 8192)
+            max_tokens = getattr(config, "CLAUDE_CHAT_STREAM_MAX_TOKENS", 9000)
 
         payload = {
-            "model":      self.model,
+            "model": self.model,
             "max_tokens": max_tokens,
-            "messages":   messages,
-            "stream":     True,
-            # temperature intentionally omitted — claude-sonnet-5 rejects it (adaptive thinking)
+            "messages": messages,
+            "stream": True,
         }
         if system:
             payload["system"] = system
@@ -120,12 +123,15 @@ class ClaudeClient:
 
         try:
             with requests.post(
-                ENDPOINT, headers=self._headers(), json=payload, stream=True, timeout=120,
+                ENDPOINT,
+                headers=self._headers(),
+                json=payload,
+                stream=True,
+                timeout=getattr(config, "CLAUDE_HTTP_TIMEOUT_SEC", 120),
             ) as resp:
                 if not resp.ok:
-                    logger.error("[ClaudeClient] chat_stream() HTTP %s | %s", resp.status_code, resp.text[:300])
+                    logger.error("[ClaudeClient] Status: %s | Body: %s", resp.status_code, resp.text)
                 resp.raise_for_status()
-                resp.encoding = 'utf-8'
 
                 for raw_line in resp.iter_lines(decode_unicode=True):
                     if not raw_line or not raw_line.startswith("data:"):
@@ -153,34 +159,7 @@ class ClaudeClient:
 
         except Exception as e:
             if first_token_yielded:
-                logger.error(
-                    "[ClaudeClient] chat_stream() failed MID-STREAM | model=%s | error=%s",
-                    self.model, e,
-                )
-                raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e
+                logger.error("[ClaudeClient] chat_stream() failed MID-STREAM: %s", e)
             else:
-                logger.warning(
-                    "[ClaudeClient] Claude stream failed before first token (%s) — falling back to Gemini 2.5 Flash with Qdrant context...",
-                    e,
-                )
-                gemini_key = os.environ.get("GEMINI_API_KEY", "")
-                if gemini_key:
-                    try:
-                        from google import genai
-                        client = genai.Client(api_key=gemini_key)
-                        prompt_content = messages[0]["content"] if messages else ""
-                        if system:
-                            prompt_content = f"{system}\n\n{prompt_content}"
-                        resp = client.models.generate_content_stream(
-                            model="gemini-2.5-flash",
-                            contents=[prompt_content]
-                        )
-                        for chunk in resp:
-                            txt = chunk.text or ""
-                            if txt:
-                                yield txt
-                        logger.info("[ClaudeClient] Gemini fallback stream completed successfully with full Qdrant context.")
-                        return
-                    except Exception as gemini_err:
-                        logger.error("[ClaudeClient] Gemini fallback stream also failed: %s", gemini_err)
-                raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e
+                logger.error("[ClaudeClient] chat_stream() failed before first token: %s", e)
+            raise ClaudeGenerationError(f"Claude chat_stream() failed: {e}") from e
