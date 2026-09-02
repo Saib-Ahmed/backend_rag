@@ -48,6 +48,11 @@ from final_rag.db.database import (
     health_check_db,
 )
 import final_rag.config as config
+from datetime import datetime
+try:
+    import unified_db
+except ImportError:
+    unified_db = None
 
 load_dotenv()
 
@@ -326,6 +331,63 @@ async def delete_doc(filename: str):
 @app.get("/documents")
 def get_documents():
     return {"documents": list_documents()}
+
+
+# ── GET /api/stats (and /api/v2/stats, /stats) ─────────────────────────────────
+@app.get("/api/stats")
+@app.get("/api/v2/stats")
+@app.get("/stats")
+def get_stats(domain: Optional[str] = Query(None)):
+    store_stats = db.get_stats(domain or "")
+    
+    file_names = []
+    files_meta = {}
+    
+    # 1. Primary source: document_metadata collection (111+ legal docs)
+    if unified_db:
+        try:
+            meta_docs = unified_db.get_all_document_metadata(domain=domain)
+            for d in meta_docs:
+                fname = d.get("file_name")
+                if fname:
+                    if fname not in file_names:
+                        file_names.append(fname)
+                    upload_time = d.get("ingestion_date") or d.get("created_at") or ""
+                    if isinstance(upload_time, datetime):
+                        upload_time = upload_time.isoformat()
+                    files_meta[fname] = {
+                        "upload_time": str(upload_time),
+                        "doc_type": d.get("doc_type", "PDF"),
+                        "domain": d.get("domain", "msme"),
+                        "source": d.get("source", ""),
+                        "source_description": d.get("source_description", ""),
+                    }
+        except Exception as e:
+            logger.warning(f"Failed to fetch metadata docs in get_stats: {e}")
+
+    # 2. Secondary source: db.documents collection
+    for doc in list_documents():
+        fname = doc.get("file_name")
+        if fname:
+            if fname not in file_names:
+                file_names.append(fname)
+            if fname not in files_meta:
+                files_meta[fname] = {
+                    "upload_time": doc.get("upload_time") or "",
+                    "doc_type": doc.get("doc_type", "PDF"),
+                }
+
+    return {
+        "status": "online",
+        "num_chunks": store_stats.get("num_chunks", 0),
+        "files": file_names,
+        "files_meta": files_meta,
+        "graph": {
+            "connected": False,
+            "entities": 0,
+            "relationships": 0,
+        },
+    }
 
 
 # ── GET /api/v2/sessions ──────────────────────────────────────────────────────

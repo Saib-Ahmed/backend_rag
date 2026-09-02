@@ -134,6 +134,22 @@ class QdrantManager:
             ),
         )
 
+    def get_stats(self, domain: str = "") -> Dict[str, Any]:
+        collection_name = self._collection_name(domain)
+        try:
+            client = self.get_client()
+            info = client.get_collection(collection_name=collection_name)
+            return {
+                "num_chunks": info.points_count or 0,
+                "status": "online",
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get collection stats for {collection_name}: {e}")
+            return {
+                "num_chunks": 0,
+                "status": "online",
+            }
+
     def _build_filter(self, filter_dict: Optional[Dict[str, Any]]) -> Optional[Filter]:
         if not filter_dict:
             return None
