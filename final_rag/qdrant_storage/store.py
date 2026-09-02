@@ -59,7 +59,7 @@ class QdrantManager:
     ):
         self.storage_path = Path(storage_path or getattr(config, "QDRANT_STORAGE_PATH", "./qdrant_db"))
         self.default_collection = default_collection or getattr(config, "QDRANT_COLLECTION_NAME", "rag_documents")
-        self.dimensions = dimensions or getattr(config, "EMBED_DIMENSIONS", 2560)
+        self.dimensions = dimensions or getattr(config, "EMBED_DIMENSIONS", 1536)
         self._client: Optional[QdrantClient] = None
         self._initialized_collections: set[str] = set()
 
@@ -76,6 +76,16 @@ class QdrantManager:
             return self.default_collection
         collections_map = getattr(config, "QDRANT_COLLECTIONS", {})
         return collections_map.get(domain, domain if domain else self.default_collection)
+
+    def recreate_collection(self, domain: str = "") -> None:
+        name = self._collection_name(domain)
+        client = self.get_client()
+        existing = [c.name for c in client.get_collections().collections]
+        if name in existing:
+            client.delete_collection(collection_name=name)
+            logger.info("Deleted existing Qdrant collection: %s", name)
+        self._initialized_collections.discard(name)
+        self.ensure_collection(domain)
 
     def ensure_collection(self, domain: str = "") -> None:
         name = self._collection_name(domain)

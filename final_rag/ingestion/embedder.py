@@ -57,7 +57,7 @@ def _truncate_by_tokens(text: str, max_tokens: int) -> str:
 
 
 def _truncate_and_normalize(vec: np.ndarray, target_dim: int = None) -> np.ndarray:
-    target_dim = target_dim or getattr(config, "EMBED_DIMENSIONS", 2560)
+    target_dim = target_dim or getattr(config, "EMBED_DIMENSIONS", 1536)
     truncated  = vec[:target_dim]
     norm       = np.linalg.norm(truncated)
     return truncated.astype(np.float32) if norm == 0 else (truncated / norm).astype(np.float32)

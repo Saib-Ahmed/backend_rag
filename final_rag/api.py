@@ -322,13 +322,27 @@ async def upload_document(
 @app.delete("/api/v2/documents/{filename}")
 @app.delete("/api/documents/{filename}")
 @app.delete("/documents/{filename}")
-async def delete_doc(filename: str):
+async def delete_doc(filename: str, domain: Optional[str] = Query(None)):
     try:
-        await run_in_threadpool(lambda: db.delete_document(filename))
+        await run_in_threadpool(lambda: db.delete_document(filename, domain=domain or ""))
         await run_in_threadpool(lambda: delete_document_record(filename))
         return {"status": "success", "deleted": filename}
     except Exception as e:
         logger.error("Failed to delete document %s: %s", filename, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── DELETE /api/v2/documents (Clear All) ──────────────────────────────────────
+@app.delete("/api/v2/documents")
+@app.delete("/api/documents")
+@app.delete("/documents")
+async def clear_all_docs(domain: Optional[str] = Query(None)):
+    try:
+        await run_in_threadpool(lambda: db.recreate_collection(domain or ""))
+        await run_in_threadpool(clear_all_documents)
+        return {"status": "success", "message": "All documents cleared and Qdrant collection reset (1536d)."}
+    except Exception as e:
+        logger.error("Failed to clear all documents: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
